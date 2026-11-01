@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Download single auth file by name
@@ -514,7 +515,49 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	return h.upsertAuthRecord(ctx, auth)
 }
 
+// pluginOwnershipRecorder wraps a plugin auth parser and remembers whether a
+// plugin claimed the file, so the caller can keep the plugin-assigned auth ID.
+type pluginOwnershipRecorder struct {
+	parser  synthesizer.PluginAuthParser
+	claimed bool
+}
+
+func (r *pluginOwnershipRecorder) ParseAuth(ctx context.Context, req pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
+	auth, handled, err := r.parser.ParseAuth(ctx, req)
+	if err == nil && handled {
+		r.claimed = true
+	}
+	return auth, handled, err
+}
+
+func (r *pluginOwnershipRecorder) ParseAuths(ctx context.Context, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+	if multi, ok := r.parser.(synthesizer.PluginMultiAuthParser); ok {
+		auths, handled, err := multi.ParseAuths(ctx, req)
+		if err == nil && handled {
+			r.claimed = true
+		}
+		return auths, handled, err
+	}
+	auth, handled, err := r.ParseAuth(ctx, req)
+	if err != nil || !handled || auth == nil {
+		return nil, handled, err
+	}
+	return []*coreauth.Auth{auth}, true, nil
+}
+
 func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
+	var parser synthesizer.PluginAuthParser
+	if h != nil && h.pluginHost != nil {
+		parser = h.pluginHost
+	}
+	return h.buildAuthFromFileDataWithParser(path, data, parser)
+}
+
+// buildAuthFromFileDataWithParser builds the auth record for an auth file written
+// through the management API. The plugin parser must be consulted exactly like the
+// file watcher does; otherwise the API registers a path-derived ID while the
+// watcher registers the plugin-assigned ID, and one credential appears twice.
+func (h *Handler) buildAuthFromFileDataWithParser(path string, data []byte, parser synthesizer.PluginAuthParser) (*coreauth.Auth, error) {
 	if path == "" {
 		return nil, fmt.Errorf("auth path is empty")
 	}
@@ -549,12 +592,17 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		authID = path
 	}
 	auth := (*coreauth.Auth)(nil)
+	var recorder *pluginOwnershipRecorder
 	if h != nil && h.cfg != nil {
 		sctx := &synthesizer.SynthesisContext{
 			Config:      h.cfg,
 			AuthDir:     h.cfg.AuthDir,
 			Now:         time.Now(),
 			IDGenerator: synthesizer.NewStableIDGenerator(),
+		}
+		if parser != nil {
+			recorder = &pluginOwnershipRecorder{parser: parser}
+			sctx.PluginAuthParser = recorder
 		}
 		generated, errSynthesize := synthesizer.SynthesizeAuthFile(sctx, path, data)
 		if errSynthesize != nil {
@@ -579,13 +627,17 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 			UpdatedAt: time.Now(),
 		}
 	}
-	auth.ID = authID
+	// A plugin that claims the file owns its auth ID; every other provider keeps
+	// the path-derived ID.
+	if recorder == nil || !recorder.claimed || strings.TrimSpace(auth.ID) == "" {
+		auth.ID = authID
+	}
 	auth.FileName = filepath.Base(path)
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
 	}
 	if h != nil && h.authManager != nil {
-		if existing, ok := h.authManager.GetByID(authID); ok {
+		if existing, ok := h.authManager.GetByID(auth.ID); ok {
 			auth.CreatedAt = existing.CreatedAt
 			if !coreauth.CredentialsChanged(existing, auth) {
 				if !hasLastRefresh {

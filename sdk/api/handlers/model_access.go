@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	"github.com/tidwall/sjson"
 )
 
 // ModelPolicyFromGin returns the model policy attached to the authenticated request, or nil
@@ -60,9 +60,9 @@ func modelAccessError(ctx context.Context, modelName string) *interfaces.ErrorMe
 	}
 	base := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
 	if !policy.Allows(base) || (base == "auto" && !policy.Allows(util.ResolveAutoModel(base))) {
-		body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`
-		body, _ = sjson.Set(body, "error.message", "this API key is not allowed to use model "+modelName)
-		return &interfaces.ErrorMessage{StatusCode: http.StatusForbidden, Error: errors.New(body)}
+		body := ojson.NewDocString(`{"error":{"message":"","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`)
+		_ = body.Set("error.message", "this API key is not allowed to use model "+modelName)
+		return &interfaces.ErrorMessage{StatusCode: http.StatusForbidden, Error: errors.New(body.String())}
 	}
 	return nil
 }

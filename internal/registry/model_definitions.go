@@ -60,9 +60,27 @@ func GetAIStudioModels() []*ModelInfo {
 	return cloneModelInfos(getModels().AIStudio)
 }
 
+// codexFreeUnsupportedModels lists models that the remote/embedded catalog
+// advertises for the Codex free tier but that OpenAI rejects for free ChatGPT
+// accounts ("model is not supported when using Codex with a ChatGPT account").
+// They are filtered at read time so a catalog refresh cannot reintroduce them.
+var codexFreeUnsupportedModels = map[string]struct{}{
+	"gpt-6.1-terra": {},
+}
+
 // GetCodexFreeModels returns model definitions for the Codex free plan tier.
 func GetCodexFreeModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexFree))
+	models := cloneModelInfos(getModels().CodexFree)
+	filtered := models[:0]
+	for _, model := range models {
+		if model != nil {
+			if _, blocked := codexFreeUnsupportedModels[model.ID]; blocked {
+				continue
+			}
+		}
+		filtered = append(filtered, model)
+	}
+	return WithCodexBuiltins(filtered)
 }
 
 // GetCodexTeamModels returns model definitions for the Codex team plan tier.

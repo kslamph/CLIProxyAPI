@@ -705,9 +705,22 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 }
 
-// StartNonStreamingKeepAlive emits blank lines every 5 seconds while waiting for a non-streaming response.
+// StartMediaNonStreamingKeepAlive emits blank lines every nonstream-keepalive-interval
+// seconds while waiting for a non-streaming media response (image/video generation).
+//
+// It exists to survive proxy read timeouts: Cloudflare answers error 524 when the origin
+// sends no response bytes for ~100-125s, which long image/video jobs routinely exceed.
+// The first blank line commits the response headers, after which the proxy stops timing
+// the request out.
+//
+// Only media endpoints may use it. Committing headers early pins the status code to 200
+// and drops upstream response headers, so a later upstream 4xx/5xx can only be delivered
+// as an error object inside a 200 response. Chat, Responses, Claude and Gemini endpoints
+// must NOT use it: they would report upstream 429/502 throttling as HTTP 200 and hide it
+// from clients.
+//
 // It returns a stop function that must be called before writing the final response.
-func (h *BaseAPIHandler) StartNonStreamingKeepAlive(c *gin.Context, ctx context.Context) func() {
+func (h *BaseAPIHandler) StartMediaNonStreamingKeepAlive(c *gin.Context, ctx context.Context) func() {
 	if h == nil || c == nil {
 		return func() {}
 	}

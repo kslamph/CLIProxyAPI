@@ -175,12 +175,10 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	modelName := strings.Clone(ojson.GetBytesNoCopy(rawJSON, "model").String())
 
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
-	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)

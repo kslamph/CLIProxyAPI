@@ -811,7 +811,7 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, executionModel, payload, "")
 	stopKeepAlive()
 	if errMsg != nil {
@@ -874,7 +874,7 @@ func (h *OpenAIAPIHandler) VideosContent(c *gin.Context) {
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
 	resp, _, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, executionModel, payload, "")
 	stopKeepAlive()
 	if errMsg != nil {
@@ -1005,7 +1005,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosNative(c *gin.Context, rawJSON []byte
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, executionModel, rawJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
@@ -1040,7 +1040,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosCreate(c *gin.Context, xaiReq []byte,
 	if routingModel == "" {
 		routingModel = routingXAIVideosModel(meta.Model)
 	}
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, routingModel, xaiReq, "")
 	stopKeepAlive()
 	if errMsg != nil {

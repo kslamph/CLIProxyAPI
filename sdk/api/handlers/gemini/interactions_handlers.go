@@ -120,9 +120,7 @@ func (h *GeminiAPIHandler) Interactions(c *gin.Context) {
 
 func (h *GeminiAPIHandler) handleInteractionsNonStream(c *gin.Context, cliCtx context.Context, cliCancel handlers.APIHandlerCancelFunc, req handlers.ProtocolExecutionRequest) {
 	c.Header("Content-Type", "application/json")
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, errMsg := h.ExecuteProtocolWithAuthManager(cliCtx, req)
-	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)

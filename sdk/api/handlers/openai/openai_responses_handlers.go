@@ -951,9 +951,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	c.Header("Content-Type", "application/json")
 	modelName := strings.Clone(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
-	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
@@ -976,10 +974,8 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 
 	modelName := strings.Clone(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)

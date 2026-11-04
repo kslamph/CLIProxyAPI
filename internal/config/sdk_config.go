@@ -110,7 +110,9 @@ type SDKConfig struct {
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 
-	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
+	// NonStreamKeepAliveInterval controls how often blank lines are emitted while waiting for a
+	// non-streaming media (image/video) response, so a proxy read timeout (Cloudflare 524 after
+	// ~100-125s) cannot fail a long generation. Chat endpoints never emit them.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
 }

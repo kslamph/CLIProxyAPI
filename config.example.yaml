@@ -268,7 +268,14 @@ requests:
   # Default is false (disabled).
   passthrough-headers: false
 
-  # When > 0, emit blank lines every N seconds for non-streaming responses to prevent idle timeouts.
+  # When > 0, emit blank lines every N seconds while waiting for a non-streaming image/video
+  # response, so a proxy read timeout cannot fail a long generation. The first blank line commits
+  # the response headers, which pins the status code to 200: a later upstream 4xx/5xx then arrives
+  # as an error object inside a 200 response. Chat, Responses, Claude and Gemini endpoints never
+  # emit these keep-alives, so they always keep their real status codes.
+  # Behind Cloudflare (error 524 after ~100-125s), a value comfortably below that limit is required;
+  # 52 is a safe choice (requests that fail before the interval still return their real status).
+  # Default: 0 (disabled).
   nonstream-keepalive-interval: 0
 
   # Streaming behavior (SSE keep-alives + safe bootstrap retries).

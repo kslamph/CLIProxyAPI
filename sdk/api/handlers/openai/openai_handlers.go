@@ -447,9 +447,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 
 	modelName := strings.Clone(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
-	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
@@ -606,9 +604,7 @@ func (h *OpenAIAPIHandler) handleCompletionsNonStreamingResponse(c *gin.Context,
 
 	modelName := strings.Clone(ojson.GetBytesNoCopy(chatCompletionsJSON, "model").String())
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "")
-	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)

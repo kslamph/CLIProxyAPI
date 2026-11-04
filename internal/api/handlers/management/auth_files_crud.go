@@ -177,7 +177,7 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 					return errDel
 				}
 				deleted++
-				h.removeAuth(ctx, full)
+				h.removeAuthsForPath(ctx, full, "")
 				return nil
 			}()
 			if errDelete != nil {
@@ -330,12 +330,48 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 }
 
 func (h *Handler) writeAuthFileBytes(dst string, data []byte, auth *coreauth.Auth) error {
+	write := func() error { return atomicWriteAuthFile(dst, data) }
 	if h.shouldLockCodexAuthFile(auth) {
-		return codex.WithFileLock(dst, func() error {
-			return os.WriteFile(dst, data, 0o600)
-		})
+		return codex.WithFileLock(dst, write)
 	}
-	return os.WriteFile(dst, data, 0o600)
+	return write()
+}
+
+func atomicWriteAuthFile(dst string, data []byte) error {
+	if info, err := os.Lstat(dst); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return os.WriteFile(dst, data, 0o600)
+	}
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) shouldLockCodexAuthPath(path string) bool {

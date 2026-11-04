@@ -2905,6 +2905,26 @@ func TestHomeGeminiModelsIncludeTokenLimits(t *testing.T) {
 	if got := homeModelInt64Value(getPayload, "outputTokenLimit"); got != 65536 {
 		t.Fatalf("get outputTokenLimit = %d, want 65536; model=%v", got, getPayload)
 	}
+
+	denyRec := httptest.NewRecorder()
+	denyCtx, _ := gin.CreateTestContext(denyRec)
+	denyCtx.Request = httptest.NewRequest(http.MethodGet, "/v1beta/models/gemini-3.8-flash", nil)
+	denyCtx.Params = gin.Params{{Key: "action", Value: "gemini-3.8-flash"}}
+	denyCtx.Set(sdkaccess.ModelPolicyContextKey, sdkaccess.NewModelPolicy([]string{"other-model"}, nil))
+	server.handleHomeGeminiModel(denyCtx)
+	if denyRec.Code != http.StatusNotFound {
+		t.Fatalf("denied Home Gemini detail status = %d, want 404; body=%s", denyRec.Code, denyRec.Body.String())
+	}
+
+	allowRec := httptest.NewRecorder()
+	allowCtx, _ := gin.CreateTestContext(allowRec)
+	allowCtx.Request = httptest.NewRequest(http.MethodGet, "/v1beta/models/gemini-3.8-flash", nil)
+	allowCtx.Params = gin.Params{{Key: "action", Value: "gemini-3.8-flash"}}
+	allowCtx.Set(sdkaccess.ModelPolicyContextKey, sdkaccess.NewModelPolicy([]string{"gemini-3.8-flash"}, nil))
+	server.handleHomeGeminiModel(allowCtx)
+	if allowRec.Code != http.StatusOK {
+		t.Fatalf("allowed Home Gemini detail status = %d, want 200; body=%s", allowRec.Code, allowRec.Body.String())
+	}
 }
 
 func TestHomeCodexModels_MaxContextLength(t *testing.T) {

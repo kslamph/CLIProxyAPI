@@ -1004,10 +1004,14 @@ func (s *Server) handleHomeGeminiModel(c *gin.Context) {
 	action := strings.TrimPrefix(c.Param("action"), "/")
 	action = strings.TrimSpace(action)
 	for _, entry := range entries {
-		if homeGeminiModelMatches(entry, action) {
-			c.JSON(http.StatusOK, formatHomeGeminiModel(entry))
-			return
+		if !homeGeminiModelMatches(entry, action) {
+			continue
 		}
+		if policy := handlers.ModelPolicyFromGin(c); policy != nil && !policy.Allows(strings.TrimPrefix(entry.id, "models/")) {
+			continue
+		}
+		c.JSON(http.StatusOK, formatHomeGeminiModel(entry))
+		return
 	}
 
 	c.JSON(http.StatusNotFound, handlers.ErrorResponse{

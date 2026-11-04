@@ -1719,6 +1719,29 @@ func TestWriteModelListResponse_PreservesAllowedCodexSlugForDetail(t *testing.T)
 	}
 }
 
+func TestWriteModelListResponse_PreservesAllowedNameForDetail(t *testing.T) {
+	handler := &BaseAPIHandler{}
+	handler.SetPluginHost(&handlerInterceptorTestHost{
+		interceptResponse: func(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+			return pluginapi.ResponseInterceptResponse{Body: []byte(`{"object":"list","data":[{"name":"models/gemini-2.5-pro"}]}`)}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models/gemini-2.5-pro", nil)
+	ctx.Set(sdkaccess.ModelPolicyContextKey, sdkaccess.NewModelPolicy([]string{"gemini-2.5-pro"}, nil))
+	ctx.Set(ModelDetailIDContextKey, "gemini-2.5-pro")
+	handler.WriteModelListResponse(ctx, "gemini", gin.H{"models": []map[string]any{{"name": "models/gemini-2.5-pro"}}})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"name":"models/gemini-2.5-pro"`) {
+		t.Fatalf("body = %s, want preserved name entry", rec.Body.String())
+	}
+}
+
 func TestWriteModelListResponse_ReFiltersPluginReplacementForRestrictedKey(t *testing.T) {
 	handler := &BaseAPIHandler{}
 	handler.SetPluginHost(&handlerInterceptorTestHost{

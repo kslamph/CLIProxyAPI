@@ -34,6 +34,14 @@ server:
   # Default is 0 (disabled / no limit).
   max-request-body-bytes: 0
 
+  # Aggregate memory budget for materializing request bodies before handlers read them.
+  # Unknown-length bodies reserve the configured max-request-body-bytes, or the budget when no max is set.
+  # A body larger than the budget runs exclusively rather than waiting forever.
+  request-body-admission:
+    enabled: true
+    budget-bytes: 134217728
+    quantum-bytes: 2097152
+
   # Negotiated compression of downstream HTTP responses (including SSE streams).
   # Responses are compressed only when the client advertises zstd or gzip in
   # Accept-Encoding; WebSocket upgrades are never wrapped. Encoder memory is

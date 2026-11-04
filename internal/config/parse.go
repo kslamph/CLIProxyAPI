@@ -40,6 +40,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
+	cfg.RequestBodyAdmission = DefaultRequestBodyAdmissionConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
@@ -56,6 +57,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, errValidate
 	}
 	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.RequestBodyAdmission.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
 	if cfg.Discovery.ServiceType == "" {

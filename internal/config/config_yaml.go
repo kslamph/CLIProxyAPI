@@ -453,7 +453,15 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 			return node.Value == "10"
 		case "claude.session-date-pin-days":
 			return node.Value == strconv.Itoa(DefaultClaudeSessionDatePinDays)
+		case "request-body-admission.budget-bytes":
+			return node.Value == strconv.FormatInt(DefaultRequestBodyAdmissionBudgetBytes, 10)
+		case "request-body-admission.quantum-bytes":
+			return node.Value == strconv.FormatInt(DefaultRequestBodyAdmissionQuantumBytes, 10)
 		}
+	}
+
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!bool" && fullPath == "request-body-admission.enabled" {
+		return node.Value == "true"
 	}
 
 	return false

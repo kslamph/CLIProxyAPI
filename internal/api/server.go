@@ -60,6 +60,8 @@ type Server struct {
 	cfgMu sync.RWMutex
 	cfg   *config.Config
 
+	requestBodyAdmission *requestBodyAdmission
+
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
 	oldConfigYaml []byte
@@ -156,10 +158,15 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
 
 	// Create server instance
+	admissionConfig := config.DefaultRequestBodyAdmissionConfig()
+	if cfg != nil {
+		admissionConfig = cfg.RequestBodyAdmission
+	}
 	s := &Server{
 		engine:                       engine,
 		handlers:                     handlers.NewBaseAPIHandlers(effectiveSDKConfig(cfg), authManager),
 		cfg:                          cfg,
+		requestBodyAdmission:         newRequestBodyAdmission(admissionConfig),
 		accessManager:                accessManager,
 		configFilePath:               configFilePath,
 		currentPath:                  wd,
@@ -172,6 +179,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.CPATraceIDMiddleware())
+	engine.Use(requestBodyAdmissionMiddleware(s.requestBodyAdmission, func(*http.Request) int64 { return s.maxRequestBodyBytes() }))
 	engine.Use(s.maxRequestBodyBytesMiddleware())
 
 	// Add request logging middleware before recovery and extra middleware so that

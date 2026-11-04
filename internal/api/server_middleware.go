@@ -2,11 +2,13 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -71,6 +73,157 @@ func (s *Server) maxRequestBodyBytes() int64 {
 		return 0
 	}
 	return cfg.MaxRequestBodyBytes
+}
+
+type requestBodyAdmission struct {
+	mu      sync.Mutex
+	enabled bool
+	budget  int64
+	quantum int64
+	used    int64
+	notify  chan struct{}
+}
+
+func newRequestBodyAdmission(cfg config.RequestBodyAdmissionConfig) *requestBodyAdmission {
+	if cfg.BudgetBytes <= 0 && cfg.QuantumBytes <= 0 {
+		cfg = config.DefaultRequestBodyAdmissionConfig()
+	}
+	if cfg.BudgetBytes <= 0 {
+		cfg.BudgetBytes = config.DefaultRequestBodyAdmissionBudgetBytes
+	}
+	if cfg.QuantumBytes <= 0 {
+		cfg.QuantumBytes = config.DefaultRequestBodyAdmissionQuantumBytes
+	}
+	return &requestBodyAdmission{enabled: cfg.Enabled, budget: cfg.BudgetBytes, quantum: cfg.QuantumBytes, notify: make(chan struct{})}
+}
+
+func (a *requestBodyAdmission) configure(cfg config.RequestBodyAdmissionConfig) {
+	if a == nil {
+		return
+	}
+	if cfg.BudgetBytes <= 0 && cfg.QuantumBytes <= 0 {
+		cfg = config.DefaultRequestBodyAdmissionConfig()
+	}
+	if cfg.BudgetBytes <= 0 {
+		cfg.BudgetBytes = config.DefaultRequestBodyAdmissionBudgetBytes
+	}
+	if cfg.QuantumBytes <= 0 {
+		cfg.QuantumBytes = config.DefaultRequestBodyAdmissionQuantumBytes
+	}
+	a.mu.Lock()
+	changed := a.enabled != cfg.Enabled || a.budget != cfg.BudgetBytes || a.quantum != cfg.QuantumBytes
+	a.enabled, a.budget, a.quantum = cfg.Enabled, cfg.BudgetBytes, cfg.QuantumBytes
+	if changed {
+		close(a.notify)
+		a.notify = make(chan struct{})
+	}
+	a.mu.Unlock()
+}
+
+func (a *requestBodyAdmission) budgetUnitsLocked() int64 {
+	return (a.budget-1)/a.quantum + 1
+}
+
+func (a *requestBodyAdmission) weight(contentLength int64) int64 {
+	return a.weightWithMax(contentLength, 0)
+}
+
+func (a *requestBodyAdmission) weightWithMax(contentLength, maxBodyBytes int64) int64 {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	budget, quantum := a.budget, a.quantum
+	a.mu.Unlock()
+	if budget <= 0 || quantum <= 0 {
+		return 0
+	}
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = budget
+	}
+	if contentLength < 0 || contentLength > maxBodyBytes {
+		contentLength = maxBodyBytes
+	}
+	if contentLength > budget {
+		// A body larger than the budget runs exclusively instead of waiting forever.
+		contentLength = budget
+	}
+	if contentLength <= 0 {
+		contentLength = 1
+	}
+	units := (contentLength-1)/quantum + 1
+	budgetUnits := (budget-1)/quantum + 1
+	if units > budgetUnits {
+		return budgetUnits
+	}
+	return units
+}
+
+func (a *requestBodyAdmission) acquire(ctx context.Context, weight int64) (func(), bool) {
+	if a == nil || weight <= 0 {
+		return func() {}, true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		a.mu.Lock()
+		if !a.enabled {
+			a.mu.Unlock()
+			return func() {}, true
+		}
+		budget := a.budgetUnitsLocked()
+		if weight > budget {
+			weight = budget
+		}
+		if a.used+weight <= budget {
+			a.used += weight
+			a.mu.Unlock()
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					a.mu.Lock()
+					a.used -= weight
+					close(a.notify)
+					a.notify = make(chan struct{})
+					a.mu.Unlock()
+				})
+			}, true
+		}
+		wait := a.notify
+		a.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return func() {}, false
+		case <-wait:
+		}
+	}
+}
+
+func requestBodyAdmissionMiddleware(admission *requestBodyAdmission, maxBodyBytes func(*http.Request) int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c == nil || c.Request == nil || c.Request.Body == nil || c.Request.Body == http.NoBody || (c.Request.ContentLength == 0 && len(c.Request.TransferEncoding) == 0) {
+			c.Next()
+			return
+		}
+		if admission == nil {
+			c.Next()
+			return
+		}
+		maxBytes := int64(0)
+		if maxBodyBytes != nil {
+			maxBytes = maxBodyBytes(c.Request)
+		}
+		weight := admission.weightWithMax(c.Request.ContentLength, maxBytes)
+		release, ok := admission.acquire(c.Request.Context(), weight)
+		if !ok {
+			closeUnconsumedRequestOnAbort(c)
+			c.Abort()
+			return
+		}
+		defer release()
+		c.Next()
+	}
 }
 
 type requestBodyTracker struct {

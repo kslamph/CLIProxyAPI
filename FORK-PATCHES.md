@@ -175,3 +175,4 @@ file CLIProxyAPI   # must say "dynamically linked"
 | 2026-10-22 | v8.0.38 | `0db19025` | first VPS deploy (static build, later found wrong) |
 | 2026-10-31 | v8.0.48 | `909b88f3` + dirty tree | P1 merged; CGO rebuild incl. P2 before it was committed |
 | 2026-11-01 | v8.0.48 | `cf7f0f92` | P1 + P2 + P3; fixes duplicate opencode-go profile after saving excluded models |
+| 2026-11-04 | v8.0.53 | `605d9ed5` | Upstream v8.0.53 merge; moego port; slug/name detail selection; multi-auth & virtual-source reconciliation |

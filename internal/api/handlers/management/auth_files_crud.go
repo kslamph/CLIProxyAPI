@@ -285,12 +285,12 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 			dst = abs
 		}
 	}
+	release := h.beginSIWCFileMutation(ctx, dst)
+	defer release()
 	auths, err := h.buildAuthRecordsFromFileDataWithParser(dst, data, h.pluginAuthParserSnapshot())
 	if err != nil {
 		return err
 	}
-	release := h.beginSIWCFileMutation(ctx, dst)
-	defer release()
 	if len(auths) > 0 {
 		if errWrite := h.writeAuthFileBytes(dst, data, auths[0]); errWrite != nil {
 			return fmt.Errorf("failed to write file: %w", errWrite)
@@ -761,13 +761,11 @@ func authFilePath(auth *coreauth.Auth) string {
 	if auth == nil || auth.Attributes == nil {
 		return ""
 	}
-	path := strings.TrimSpace(auth.Attributes[coreauth.AttributePath])
-	if path != "" {
-		return path
-	}
-	source := strings.TrimSpace(auth.Attributes[coreauth.AttributeSource])
-	if source != "" && source != coreauth.AuthSourceFile {
-		return source
+	for _, key := range []string{coreauth.AttributePath, coreauth.AttributeVirtualSource, coreauth.AttributeSource} {
+		value := strings.TrimSpace(auth.Attributes[key])
+		if value != "" && value != coreauth.AuthSourceFile {
+			return value
+		}
 	}
 	return ""
 }

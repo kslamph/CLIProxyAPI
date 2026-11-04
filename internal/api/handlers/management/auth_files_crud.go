@@ -279,6 +279,8 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 }
 
 func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) error {
+	h.authFileWriteMu.Lock()
+	defer h.authFileWriteMu.Unlock()
 	dst := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
 	if !filepath.IsAbs(dst) {
 		if abs, errAbs := filepath.Abs(dst); errAbs == nil {
@@ -295,7 +297,14 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 		return err
 	}
 	if len(auths) > 0 {
-		if errWrite := h.writeAuthFileBytes(dst, data, auths[0]); errWrite != nil {
+		var lockAuth *coreauth.Auth
+		for _, auth := range auths {
+			if h.shouldLockCodexAuthFile(auth) {
+				lockAuth = auth
+				break
+			}
+		}
+		if errWrite := h.writeAuthFileBytes(dst, data, lockAuth); errWrite != nil {
 			return fmt.Errorf("failed to write file: %w", errWrite)
 		}
 	} else if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {

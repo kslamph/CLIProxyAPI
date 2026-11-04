@@ -733,7 +733,13 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		}
 	}
 
-	body = FilterModelListResponseBody(c, body)
+	filteredBody, errFilter := FilterModelListResponseBody(c, body)
+	if errFilter != nil {
+		lifecycle.complete(pluginapi.RequestCompletionFailed, http.StatusBadGateway, errFilter)
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "Invalid model catalog", "type": "api_error"}})
+		return
+	}
+	body = filteredBody
 
 	if modelID, detail := c.Get(ModelDetailIDContextKey); detail {
 		c.Writer.Header().Del("Content-Length")

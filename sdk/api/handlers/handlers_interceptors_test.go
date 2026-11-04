@@ -1727,6 +1727,53 @@ func TestWriteModelListResponse_ReFiltersPluginReplacementForRestrictedKey(t *te
 	}
 }
 
+func TestWriteModelListResponse_RejectsMalformedPluginReplacementForRestrictedKey(t *testing.T) {
+	handler := &BaseAPIHandler{}
+	handler.SetPluginHost(&handlerInterceptorTestHost{
+		interceptResponse: func(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+			return pluginapi.ResponseInterceptResponse{Body: []byte(`{"object":"list","data":{"id":"gpt-5"}}`)}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Set(sdkaccess.ModelPolicyContextKey, sdkaccess.NewModelPolicy([]string{"claude-*"}, nil))
+	handler.WriteModelListResponse(ctx, "openai", gin.H{"object": "list", "data": []map[string]any{{"id": "original-model"}}})
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want %d for malformed restricted model list", rec.Code, http.StatusBadGateway)
+	}
+	if strings.Contains(rec.Body.String(), "gpt-5") {
+		t.Fatalf("malformed unauthorized body leaked: %s", rec.Body.String())
+	}
+}
+
+func TestWriteModelListResponseDropsNonObjectPluginModelsForRestrictedKey(t *testing.T) {
+	handler := &BaseAPIHandler{}
+	handler.SetPluginHost(&handlerInterceptorTestHost{
+		interceptResponse: func(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+			return pluginapi.ResponseInterceptResponse{Body: []byte(`{"object":"list","data":["gpt-5",{"id":"claude-opus"}]}`)}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Set(sdkaccess.ModelPolicyContextKey, sdkaccess.NewModelPolicy([]string{"claude-*"}, nil))
+	handler.WriteModelListResponse(ctx, "openai", gin.H{"object": "list", "data": []map[string]any{{"id": "original-model"}}})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "gpt-5") {
+		t.Fatalf("non-object unauthorized model leaked: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "claude-opus") {
+		t.Fatalf("valid allowed model missing: %s", rec.Body.String())
+	}
+}
+
 func TestRequestAfterAuthCapture_ReadOnlyInterceptorDoesNotReallocatePayload_Issue6101(t *testing.T) {
 	capture := &requestAfterAuthCapture{}
 	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)

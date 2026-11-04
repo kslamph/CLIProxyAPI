@@ -297,6 +297,7 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
 		return err
 	}
+	h.removeConflictingFileAuths(ctx, auth)
 	if h.postAuthPersistHook != nil {
 		if errHook := h.postAuthPersistHook(ctx, auth); errHook != nil {
 			return fmt.Errorf("post-auth persist hook failed: %w", errHook)
@@ -682,4 +683,34 @@ func (h *Handler) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) err
 	}
 	_, err := h.authManager.Register(ctx, auth)
 	return err
+}
+
+func (h *Handler) removeConflictingFileAuths(ctx context.Context, auth *coreauth.Auth) {
+	path := authFilePath(auth)
+	if path == "" {
+		return
+	}
+	for _, existing := range h.authManager.List() {
+		if existing == nil || existing.ID == auth.ID || existing.AuthSourceKind() != coreauth.AuthSourceFile {
+			continue
+		}
+		if sameAuthFilePath(path, authFilePath(existing)) {
+			h.authManager.Remove(ctx, existing.ID)
+		}
+	}
+}
+
+func authFilePath(auth *coreauth.Auth) string {
+	if auth == nil || auth.Attributes == nil {
+		return ""
+	}
+	path := strings.TrimSpace(auth.Attributes[coreauth.AttributePath])
+	if path != "" {
+		return path
+	}
+	source := strings.TrimSpace(auth.Attributes[coreauth.AttributeSource])
+	if source != "" && source != coreauth.AuthSourceFile {
+		return source
+	}
+	return ""
 }

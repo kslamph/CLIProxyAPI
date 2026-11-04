@@ -82,16 +82,22 @@ func TestWriteAuthFile_PluginOwnedFileDoesNotDuplicate(t *testing.T) {
 	path := filepath.Join(authDir, "Primary-2.json")
 	ctx := context.Background()
 
-	// The watcher/plugin registered the credential under the plugin ID first.
-	pre, err := h.buildAuthFromFileDataWithParser(path, []byte(`{"type":"opencode-go","api_key":"k"}`), parser)
-	if err != nil {
-		t.Fatalf("build initial auth: %v", err)
+	// The watcher registered the file under its path-derived ID before the plugin reload.
+	pre := &coreauth.Auth{
+		ID:       filepath.Base(path),
+		FileName: filepath.Base(path),
+		Provider: "opencode-go",
+		Attributes: map[string]string{
+			coreauth.AttributePath:          path,
+			coreauth.AttributeSource:        path,
+			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+		},
 	}
-	if err := h.upsertAuthRecord(ctx, pre); err != nil {
-		t.Fatalf("register initial auth: %v", err)
+	if _, err := h.authManager.Register(ctx, pre); err != nil {
+		t.Fatalf("register initial path-derived auth: %v", err)
 	}
 
-	// The operator edits excluded models in the UI: same file name, new body.
+	// The plugin reload now claims the same file with its stable plugin ID.
 	edited := []byte(`{"type":"opencode-go","api_key":"k","excluded_models":["m1"]}`)
 	if err := h.writeAuthFile(ctx, filepath.Base(path), edited); err != nil {
 		t.Fatalf("write edited auth through management path: %v", err)

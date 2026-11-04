@@ -1,8 +1,8 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -44,39 +44,64 @@ func FilterModelList(c *gin.Context, models []map[string]any) []map[string]any {
 
 // FilterModelListResponseBody re-filters a serialized model-list response after
 // plugin response interceptors have had an opportunity to replace its body.
-func FilterModelListResponseBody(c *gin.Context, body []byte) []byte {
+// Restricted requests fail closed when the interceptor returns a malformed catalog.
+func FilterModelListResponseBody(c *gin.Context, body []byte) ([]byte, error) {
 	if ModelPolicyFromGin(c) == nil {
-		return body
+		return body, nil
 	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return body
+	if !ojson.ValidBytes(body) {
+		return nil, errors.New("invalid model catalog JSON")
 	}
-	changed := false
+
+	doc := ojson.NewDoc(body)
+	foundList := false
 	for _, field := range []string{"data", "models"} {
-		raw, ok := envelope[field]
-		if !ok {
+		result := ojson.GetBytesNoCopy(body, field)
+		if !result.Exists() {
 			continue
 		}
-		var models []map[string]any
-		if err := json.Unmarshal(raw, &models); err != nil {
+		foundList = true
+		if !result.IsArray() {
+			return nil, errors.New("model catalog field is not an array")
+		}
+		filtered := filterOJSONModelArray(c, result)
+		if err := doc.SetRawBytes(field, filtered); err != nil {
+			return nil, err
+		}
+	}
+	if !foundList {
+		return nil, errors.New("model catalog has no data or models array")
+	}
+	return doc.Bytes(), nil
+}
+
+func filterOJSONModelArray(c *gin.Context, result ojson.Result) []byte {
+	var out bytes.Buffer
+	out.WriteByte('[')
+	first := true
+	for _, item := range result.Array() {
+		if !item.IsObject() {
 			continue
 		}
-		filtered, err := json.Marshal(FilterModelList(c, models))
-		if err != nil {
-			return body
+		name := ""
+		for _, field := range []string{"id", "name"} {
+			value := item.Get(field)
+			if value.Type == ojson.String && value.Str != "" {
+				name = strings.TrimPrefix(value.Str, "models/")
+				break
+			}
 		}
-		envelope[field] = filtered
-		changed = true
+		if name == "" || !ModelPolicyFromGin(c).Allows(name) {
+			continue
+		}
+		if !first {
+			out.WriteByte(',')
+		}
+		first = false
+		out.WriteString(item.Raw)
 	}
-	if !changed {
-		return body
-	}
-	filtered, err := json.Marshal(envelope)
-	if err != nil {
-		return body
-	}
-	return filtered
+	out.WriteByte(']')
+	return out.Bytes()
 }
 
 func listedModelName(model map[string]any) string {

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -20,6 +22,8 @@ type FileBodySource struct {
 }
 
 // NewFileBodySourceInDir creates a temp-backed source under baseDir.
+const requestLogPartsMaxAge = 24 * time.Hour
+
 func NewFileBodySourceInDir(baseDir string, prefix string) (*FileBodySource, error) {
 	prefix = sanitizeTempPrefix(prefix)
 	baseDir = strings.TrimSpace(baseDir)
@@ -28,6 +32,9 @@ func NewFileBodySourceInDir(baseDir string, prefix string) (*FileBodySource, err
 	}
 	if errMkdir := os.MkdirAll(baseDir, 0755); errMkdir != nil {
 		return nil, errMkdir
+	}
+	if errCleanup := cleanupStaleRequestLogPartsAt(baseDir, time.Now(), requestLogPartsMaxAge); errCleanup != nil {
+		log.WithError(errCleanup).Warn("failed to clean up stale request log parts")
 	}
 	dir, errCreate := os.MkdirTemp(baseDir, "request-log-parts-"+prefix+"-*")
 	if errCreate != nil {
@@ -242,6 +249,40 @@ func (s *FileBodySource) Cleanup() error {
 	}
 	if dir != "" {
 		if errRemove := os.RemoveAll(dir); errRemove != nil && firstErr == nil {
+			firstErr = errRemove
+		}
+	}
+	return firstErr
+}
+
+func cleanupStaleRequestLogPartsAt(baseDir string, now time.Time, maxAge time.Duration) error {
+	entries, errRead := os.ReadDir(baseDir)
+	if errRead != nil {
+		if os.IsNotExist(errRead) {
+			return nil
+		}
+		return errRead
+	}
+	cutoff := now.Add(-maxAge)
+	var firstErr error
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "request-log-parts-") || entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			continue
+		}
+		info, errInfo := entry.Info()
+		if errInfo != nil {
+			if os.IsNotExist(errInfo) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = errInfo
+			}
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if errRemove := os.RemoveAll(filepath.Join(baseDir, entry.Name())); errRemove != nil && !os.IsNotExist(errRemove) && firstErr == nil {
 			firstErr = errRemove
 		}
 	}

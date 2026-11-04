@@ -96,7 +96,8 @@ type hostCallbackPluginIDKey struct{}
 type hostCallbackInstanceKey struct{}
 
 type hostCallbackInstance struct {
-	closed atomic.Bool
+	closed           atomic.Bool
+	binaryBodyFrames atomic.Bool
 }
 
 func withHostCallbackPluginID(ctx context.Context, pluginID string) context.Context {
@@ -198,6 +199,13 @@ func (h *Host) callbackCallerPluginID(ctx context.Context, callbackID string) st
 }
 
 func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, error) {
+	if hostCallbackBinaryBodyFrames(ctx) {
+		var errDecode error
+		request, errDecode = decodeFramedHostHTTPRequest(request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+	}
 	httpReq, callbackID, operationID, errDecode := decodeHostHTTPRequestWithOperationID(request)
 	if errDecode != nil {
 		return nil, errDecode
@@ -219,6 +227,13 @@ func newStreamContext(ctx context.Context) (context.Context, context.CancelFunc)
 }
 
 func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte, error) {
+	if hostCallbackBinaryBodyFrames(ctx) {
+		var errDecode error
+		request, errDecode = decodeFramedHostHTTPRequest(request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+	}
 	httpReq, callbackID, operationID, errDecode := decodeHostHTTPRequestWithOperationID(request)
 	if errDecode != nil {
 		return nil, errDecode
@@ -334,6 +349,11 @@ func (h *Host) callHostHTTPStreamClose(ctx context.Context, request []byte) ([]b
 		h.httpStreams.close(hostCallbackPluginIDFromContext(ctx), hostCallbackInstanceFromContext(ctx), req.StreamID)
 	}
 	return marshalRPCResult(rpcEmptyResponse{})
+}
+
+func hostCallbackBinaryBodyFrames(ctx context.Context) bool {
+	instance := hostCallbackInstanceFromContext(ctx)
+	return instance != nil && instance.binaryBodyFrames.Load()
 }
 
 func decodeHostHTTPRequest(raw []byte) (pluginapi.HTTPRequest, error) {

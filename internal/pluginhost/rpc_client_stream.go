@@ -21,7 +21,7 @@ func (a *rpcPluginAdapter) ExecuteStream(ctx context.Context, req pluginapi.Exec
 		StreamID:        streamID,
 		HostCallbackID:  callbackID,
 	}
-	resp, errCall := callPlugin[rpcExecutorStreamResponse](ctx, a.client, pluginabi.MethodExecutorExecuteStream, rpcReq)
+	resp, errCall := callPluginWithBodyFrame[rpcExecutorStreamResponse](ctx, a.client, pluginabi.MethodExecutorExecuteStream, rpcReq, pluginabi.BodyFrameExecutor, [][]byte{req.OriginalRequest, req.Payload}, a.binaryBodyFrames)
 	if errCall != nil {
 		cleanup()
 		return pluginapi.ExecutorStreamResponse{}, errCall

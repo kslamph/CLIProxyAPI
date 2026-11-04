@@ -163,6 +163,9 @@ type Capabilities struct {
 	ManagementAPI ManagementAPI
 	// QuotaProvider surfaces credential quota and billing information for management clients.
 	QuotaProvider QuotaProvider
+	// BinaryBodyFrames opts into negotiated CPBF request framing for executor calls
+	// and host HTTP callbacks. Legacy JSON/base64 framing remains the default.
+	BinaryBodyFrames bool
 }
 
 // ExecutorModelScope declares which model-registration paths a plugin executor supports.

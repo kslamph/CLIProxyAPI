@@ -17,10 +17,11 @@ import (
 )
 
 type rpcPluginAdapter struct {
-	id       string
-	host     *Host
-	client   pluginClient
-	instance *hostCallbackInstance
+	id               string
+	host             *Host
+	client           pluginClient
+	instance         *hostCallbackInstance
+	binaryBodyFrames bool
 }
 
 type rpcAuthProvider struct {
@@ -113,7 +114,11 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.SchemaVersion > pluginabi.SchemaVersion {
 		return pluginapi.Plugin{}, fmt.Errorf("plugin schema version %d is not supported", resp.SchemaVersion)
 	}
-	adapter := &rpcPluginAdapter{id: id, host: host, client: client, instance: pluginCallbackInstance(client)}
+	instance := pluginCallbackInstance(client)
+	if instance != nil {
+		instance.binaryBodyFrames.Store(resp.Capabilities.BinaryBodyFrames)
+	}
+	adapter := &rpcPluginAdapter{id: id, host: host, client: client, instance: instance, binaryBodyFrames: resp.Capabilities.BinaryBodyFrames}
 	schemaVersion := resp.SchemaVersion
 	if schemaVersion == 0 {
 		// Missing schema_version is treated as the original contract.
@@ -634,28 +639,31 @@ func (a *rpcPluginAdapter) Authenticate(ctx context.Context, req pluginapi.Front
 func (a *rpcPluginAdapter) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorExecute, rpcExecutorRequest{
+	rpcReq := rpcExecutorRequest{
 		ExecutorRequest: req,
 		HostCallbackID:  callbackID,
-	})
+	}
+	return callPluginWithBodyFrame[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorExecute, rpcReq, pluginabi.BodyFrameExecutor, [][]byte{req.OriginalRequest, req.Payload}, a.binaryBodyFrames)
 }
 
 func (a *rpcPluginAdapter) CountTokens(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorCountTokens, rpcExecutorRequest{
+	rpcReq := rpcExecutorRequest{
 		ExecutorRequest: req,
 		HostCallbackID:  callbackID,
-	})
+	}
+	return callPluginWithBodyFrame[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorCountTokens, rpcReq, pluginabi.BodyFrameExecutor, [][]byte{req.OriginalRequest, req.Payload}, a.binaryBodyFrames)
 }
 
 func (a *rpcPluginAdapter) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRequest) (pluginapi.ExecutorHTTPResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.ExecutorHTTPResponse](ctx, a.client, pluginabi.MethodExecutorHTTPRequest, rpcExecutorHTTPRequest{
+	rpcReq := rpcExecutorHTTPRequest{
 		ExecutorHTTPRequest: req,
 		HostCallbackID:      callbackID,
-	})
+	}
+	return callPluginWithBodyFrame[pluginapi.ExecutorHTTPResponse](ctx, a.client, pluginabi.MethodExecutorHTTPRequest, rpcReq, pluginabi.BodyFrameHostHTTP, [][]byte{req.Body}, a.binaryBodyFrames)
 }
 
 func (a *rpcPluginAdapter) TranslateRequest(ctx context.Context, req pluginapi.RequestTransformRequest) (pluginapi.PayloadResponse, error) {

@@ -564,8 +564,10 @@ func (r *pluginOwnershipRecorder) ParseAuths(ctx context.Context, req pluginapi.
 
 func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
 	var parser synthesizer.PluginAuthParser
-	if h != nil && h.pluginHost != nil {
-		parser = h.pluginHost
+	if h != nil {
+		h.mu.Lock()
+		parser = h.pluginAuthParser
+		h.mu.Unlock()
 	}
 	return h.buildAuthFromFileDataWithParser(path, data, parser)
 }

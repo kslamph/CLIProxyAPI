@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -79,6 +78,7 @@ func TestBuildAuthFromFileData_KeepsPluginAssignedID(t *testing.T) {
 func TestWriteAuthFile_PluginOwnedFileDoesNotDuplicate(t *testing.T) {
 	h, authDir := newIdentityTestHandler(t)
 	parser := &fakePluginAuthParser{provider: "opencode-go", id: "opencode-go-key-abc123"}
+	h.pluginAuthParser = parser
 	path := filepath.Join(authDir, "Primary-2.json")
 	ctx := context.Background()
 
@@ -93,15 +93,8 @@ func TestWriteAuthFile_PluginOwnedFileDoesNotDuplicate(t *testing.T) {
 
 	// The operator edits excluded models in the UI: same file name, new body.
 	edited := []byte(`{"type":"opencode-go","api_key":"k","excluded_models":["m1"]}`)
-	auth, err := h.buildAuthFromFileDataWithParser(path, edited, parser)
-	if err != nil {
-		t.Fatalf("build edited auth: %v", err)
-	}
-	if err := os.WriteFile(path, edited, 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := h.upsertAuthRecord(ctx, auth); err != nil {
-		t.Fatalf("upsert edited auth: %v", err)
+	if err := h.writeAuthFile(ctx, filepath.Base(path), edited); err != nil {
+		t.Fatalf("write edited auth through management path: %v", err)
 	}
 
 	var forFile []*coreauth.Auth

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -41,6 +42,43 @@ func FilterModelList(c *gin.Context, models []map[string]any) []map[string]any {
 	return filtered
 }
 
+// FilterModelListResponseBody re-filters a serialized model-list response after
+// plugin response interceptors have had an opportunity to replace its body.
+func FilterModelListResponseBody(c *gin.Context, body []byte) []byte {
+	if ModelPolicyFromGin(c) == nil {
+		return body
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return body
+	}
+	changed := false
+	for _, field := range []string{"data", "models"} {
+		raw, ok := envelope[field]
+		if !ok {
+			continue
+		}
+		var models []map[string]any
+		if err := json.Unmarshal(raw, &models); err != nil {
+			continue
+		}
+		filtered, err := json.Marshal(FilterModelList(c, models))
+		if err != nil {
+			return body
+		}
+		envelope[field] = filtered
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	filtered, err := json.Marshal(envelope)
+	if err != nil {
+		return body
+	}
+	return filtered
+}
+
 func listedModelName(model map[string]any) string {
 	for _, field := range []string{"id", "name"} {
 		if name, _ := model[field].(string); name != "" {
@@ -59,7 +97,11 @@ func modelAccessError(ctx context.Context, modelName string) *interfaces.ErrorMe
 		return nil
 	}
 	base := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
-	if !policy.Allows(base) || (base == "auto" && !policy.Allows(util.ResolveAutoModel(base))) {
+	checkModel := base
+	if checkModel == "auto" {
+		checkModel = util.ResolveAutoModel(checkModel)
+	}
+	if !policy.Allows(checkModel) {
 		body := ojson.NewDocString(`{"error":{"message":"","type":"invalid_request_error","code":"model_not_allowed","param":"model"}}`)
 		_ = body.Set("error.message", "this API key is not allowed to use model "+modelName)
 		return &interfaces.ErrorMessage{StatusCode: http.StatusForbidden, Error: errors.New(body.String())}

@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -56,6 +57,7 @@ type Handler struct {
 	postAuthHook            coreauth.PostAuthHook
 	postAuthPersistHook     coreauth.PostAuthHook
 	pluginHost              *pluginhost.Host
+	pluginAuthParser        synthesizer.PluginAuthParser
 	configReloadHook        func(context.Context, *config.Config)
 	pluginStoreRegistryURL  string
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
@@ -205,6 +207,7 @@ func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 	h.mu.Lock()
 	if h.pluginHost != host {
 		h.pluginHost = host
+		h.pluginAuthParser = host
 	}
 	h.mu.Unlock()
 }

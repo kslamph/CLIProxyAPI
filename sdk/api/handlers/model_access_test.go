@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 
@@ -55,5 +57,22 @@ func TestModelAccessError(t *testing.T) {
 	}
 	if modelAccessError(context.Background(), "gpt-5") != nil {
 		t.Fatal("request without a policy must be unrestricted")
+	}
+}
+
+func TestModelAccessError_AllowsResolvedAutoModel(t *testing.T) {
+	registryRef := registry.GetGlobalRegistry()
+	clientID := "model-access-auto-test"
+	registryRef.RegisterClient(clientID, "openai", []*registry.ModelInfo{{ID: "gpt-5-auto-test", Created: 1}})
+	defer registryRef.UnregisterClient(clientID)
+
+	resolved := util.ResolveAutoModel("auto")
+	if resolved == "auto" {
+		t.Fatal("test requires the registry to resolve auto to a concrete model")
+	}
+	policy := sdkaccess.NewModelPolicy([]string{resolved}, nil)
+	ctx := context.WithValue(context.Background(), "gin", ginWithPolicy(policy))
+	if errMsg := modelAccessError(ctx, "auto"); errMsg != nil {
+		t.Fatalf("modelAccessError(auto) = %v, want resolved model %q to be allowed", errMsg, resolved)
 	}
 }

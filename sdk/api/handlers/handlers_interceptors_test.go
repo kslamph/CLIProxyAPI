@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -1692,6 +1693,37 @@ func TestWriteModelListResponse_ExposesResponseToPluginInterceptors(t *testing.T
 	}
 	if apiResp, ok := ctx.Get("API_RESPONSE"); !ok || !strings.Contains(string(apiResp.([]byte)), "intercepted-model") {
 		t.Fatalf("API_RESPONSE not recorded properly: %#v", apiResp)
+	}
+}
+
+func TestWriteModelListResponse_ReFiltersPluginReplacementForRestrictedKey(t *testing.T) {
+	handler := &BaseAPIHandler{}
+	handler.SetPluginHost(&handlerInterceptorTestHost{
+		interceptResponse: func(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+			return pluginapi.ResponseInterceptResponse{
+				Body: []byte(`{"object":"list","data":[{"id":"gpt-5"},{"id":"claude-opus"}]}`),
+			}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Set(sdkaccess.ModelPolicyContextKey, sdkaccess.NewModelPolicy([]string{"claude-*"}, nil))
+
+	handler.WriteModelListResponse(ctx, "openai", gin.H{
+		"object": "list",
+		"data":   []map[string]any{{"id": "original-model"}},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "gpt-5") {
+		t.Fatalf("restricted model leaked through plugin replacement: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "claude-opus") {
+		t.Fatalf("allowed model was removed: %s", rec.Body.String())
 	}
 }
 

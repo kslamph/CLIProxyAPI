@@ -919,6 +919,11 @@ func cleanAuthFilePath(path string) string {
 	if path == "" {
 		return ""
 	}
+	if real, errReal := filepath.EvalSymlinks(path); errReal == nil && strings.TrimSpace(real) != "" {
+		path = real
+	} else if parent, errParent := filepath.EvalSymlinks(filepath.Dir(path)); errParent == nil && strings.TrimSpace(parent) != "" {
+		path = filepath.Join(parent, filepath.Base(path))
+	}
 	if abs, errAbs := filepath.Abs(path); errAbs == nil && strings.TrimSpace(abs) != "" {
 		path = abs
 	}

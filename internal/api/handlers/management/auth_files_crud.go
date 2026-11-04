@@ -342,7 +342,11 @@ func atomicWriteAuthFile(dst string, data []byte) error {
 		return os.WriteFile(dst, data, 0o600)
 	}
 	dir := filepath.Dir(dst)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-*")
+	prefix := "." + filepath.Base(dst)
+	if len(prefix) > 200 {
+		prefix = prefix[:200]
+	}
+	tmp, err := os.CreateTemp(dir, prefix+".tmp-*")
 	if err != nil {
 		return err
 	}

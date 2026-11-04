@@ -285,6 +285,9 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 			dst = abs
 		}
 	}
+	if _, err := parseAuthFileMetadata(data); err != nil {
+		return err
+	}
 	release := h.beginSIWCFileMutation(ctx, dst)
 	defer release()
 	auths, err := h.buildAuthRecordsFromFileDataWithParser(dst, data, h.pluginAuthParserSnapshot())
@@ -608,14 +611,9 @@ func (h *Handler) buildAuthRecordsFromFileDataWithParser(path string, data []byt
 			return nil, fmt.Errorf("failed to read auth file: %w", err)
 		}
 	}
-	metadata := make(map[string]any)
-	if err := json.Unmarshal(data, &metadata); err != nil {
-		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, err)
-	}
-	coreauth.NormalizeCredentialMetadata(metadata)
-	// Loading tolerates invalid exclusion rules, so reject them here before anything is persisted.
-	if _, errExcluded := synthesizer.ExtractExcludedModelsFromMetadata(metadata); errExcluded != nil {
-		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errExcluded)
+	metadata, err := parseAuthFileMetadata(data)
+	if err != nil {
+		return nil, err
 	}
 	provider, _ := metadata["type"].(string)
 	if provider == "" {
@@ -755,6 +753,18 @@ func (h *Handler) removeConflictingFileAuthsAtPath(ctx context.Context, path str
 			h.authManager.Remove(ctx, existing.ID)
 		}
 	}
+}
+
+func parseAuthFileMetadata(data []byte) (map[string]any, error) {
+	metadata := make(map[string]any)
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, err)
+	}
+	coreauth.NormalizeCredentialMetadata(metadata)
+	if _, errExcluded := synthesizer.ExtractExcludedModelsFromMetadata(metadata); errExcluded != nil {
+		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errExcluded)
+	}
+	return metadata, nil
 }
 
 func authFilePath(auth *coreauth.Auth) string {

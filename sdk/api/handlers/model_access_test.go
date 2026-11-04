@@ -20,6 +20,16 @@ func ginWithPolicy(policy *sdkaccess.ModelPolicy) *gin.Context {
 	return c
 }
 
+func TestFilterModelListRecognizesCodexSlug(t *testing.T) {
+	models := []map[string]any{{"slug": "gpt-5"}, {"slug": "gpt-4"}}
+	policy := sdkaccess.NewModelPolicy([]string{"gpt-5"}, nil)
+
+	got := FilterModelList(ginWithPolicy(policy), models)
+	if len(got) != 1 || got[0]["slug"] != "gpt-5" {
+		t.Fatalf("slug-filtered models = %v, want only gpt-5", got)
+	}
+}
+
 func TestFilterModelList(t *testing.T) {
 	models := []map[string]any{{"id": "gpt-5"}, {"id": "claude-opus"}, {"name": "models/gemini-3"}}
 	policy := sdkaccess.NewModelPolicy([]string{"claude-*", "gemini-*"}, nil)

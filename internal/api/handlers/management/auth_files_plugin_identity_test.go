@@ -42,6 +42,19 @@ func (p *fakePluginAuthParser) ParseAuths(_ context.Context, req pluginapi.AuthP
 
 var _ synthesizer.PluginMultiAuthParser = (*fakePluginAuthParser)(nil)
 
+type fakeMultiPluginAuthParser struct {
+	auths   []*coreauth.Auth
+	handled bool
+}
+
+func (p *fakeMultiPluginAuthParser) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
+	return nil, false, nil
+}
+
+func (p *fakeMultiPluginAuthParser) ParseAuths(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+	return p.auths, p.handled, nil
+}
+
 func newIdentityTestHandler(t *testing.T) (*Handler, string) {
 	t.Helper()
 	authDir := t.TempDir()
@@ -118,6 +131,76 @@ func TestWriteAuthFile_PluginOwnedFileDoesNotDuplicate(t *testing.T) {
 	}
 	if forFile[0].ID != "opencode-go-key-abc123" {
 		t.Fatalf("auth ID = %q, want plugin-assigned ID", forFile[0].ID)
+	}
+}
+
+func TestWriteAuthFileKeepsAllPluginOwnedAuthsAndRemovesOldIDs(t *testing.T) {
+	h, authDir := newIdentityTestHandler(t)
+	path := filepath.Join(authDir, "multi.json")
+	ctx := context.Background()
+	old := &coreauth.Auth{
+		ID:       "old-path-id",
+		FileName: "multi.json",
+		Provider: "multi-provider",
+		Attributes: map[string]string{
+			coreauth.AttributePath:          path,
+			coreauth.AttributeSource:        path,
+			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+		},
+	}
+	if _, err := h.authManager.Register(ctx, old); err != nil {
+		t.Fatalf("register old auth: %v", err)
+	}
+	h.pluginAuthParser = &fakeMultiPluginAuthParser{
+		handled: true,
+		auths: []*coreauth.Auth{
+			{ID: "plugin-a", Provider: "multi-provider"},
+			{ID: "plugin-b", Provider: "multi-provider"},
+		},
+	}
+
+	if err := h.writeAuthFile(ctx, filepath.Base(path), []byte(`{"type":"multi-provider"}`)); err != nil {
+		t.Fatalf("write multi-auth file: %v", err)
+	}
+	for _, id := range []string{"plugin-a", "plugin-b"} {
+		if _, ok := h.authManager.GetByID(id); !ok {
+			t.Fatalf("missing plugin auth %q", id)
+		}
+	}
+	if _, ok := h.authManager.GetByID("old-path-id"); ok {
+		t.Fatal("old path-derived auth was not removed")
+	}
+}
+
+func TestWriteAuthFileHonorsHandledEmptyPluginResult(t *testing.T) {
+	h, authDir := newIdentityTestHandler(t)
+	path := filepath.Join(authDir, "empty.json")
+	ctx := context.Background()
+	old := &coreauth.Auth{
+		ID:       "old-empty-id",
+		FileName: "empty.json",
+		Provider: "multi-provider",
+		Attributes: map[string]string{
+			coreauth.AttributePath:          path,
+			coreauth.AttributeSource:        path,
+			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+		},
+	}
+	if _, err := h.authManager.Register(ctx, old); err != nil {
+		t.Fatalf("register old auth: %v", err)
+	}
+	h.pluginAuthParser = &fakeMultiPluginAuthParser{handled: true}
+
+	if err := h.writeAuthFile(ctx, filepath.Base(path), []byte(`{"type":"multi-provider"}`)); err != nil {
+		t.Fatalf("write handled-empty file: %v", err)
+	}
+	if _, ok := h.authManager.GetByID("old-empty-id"); ok {
+		t.Fatal("handled-empty plugin result recreated or retained an old auth")
+	}
+	for _, auth := range h.authManager.List() {
+		if auth.FileName == "empty.json" {
+			t.Fatalf("handled-empty plugin result created auth: %#v", auth)
+		}
 	}
 }
 

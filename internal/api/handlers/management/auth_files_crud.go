@@ -285,22 +285,34 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 			dst = abs
 		}
 	}
-	auth, err := h.buildAuthFromFileData(dst, data)
+	auths, err := h.buildAuthRecordsFromFileDataWithParser(dst, data, h.pluginAuthParserSnapshot())
 	if err != nil {
 		return err
 	}
 	release := h.beginSIWCFileMutation(ctx, dst)
 	defer release()
-	if errWrite := h.writeAuthFileBytes(dst, data, auth); errWrite != nil {
+	if len(auths) > 0 {
+		if errWrite := h.writeAuthFileBytes(dst, data, auths[0]); errWrite != nil {
+			return fmt.Errorf("failed to write file: %w", errWrite)
+		}
+	} else if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
-	if err := h.upsertAuthRecord(ctx, auth); err != nil {
+	if err := h.upsertAuthRecords(ctx, auths); err != nil {
 		return err
 	}
-	h.removeConflictingFileAuths(ctx, auth)
+	keepIDs := make(map[string]struct{}, len(auths))
+	for _, auth := range auths {
+		if auth != nil {
+			keepIDs[auth.ID] = struct{}{}
+		}
+	}
+	h.removeConflictingFileAuthsAtPath(ctx, dst, keepIDs)
 	if h.postAuthPersistHook != nil {
-		if errHook := h.postAuthPersistHook(ctx, auth); errHook != nil {
-			return fmt.Errorf("post-auth persist hook failed: %w", errHook)
+		for _, auth := range auths {
+			if errHook := h.postAuthPersistHook(ctx, auth); errHook != nil {
+				return fmt.Errorf("post-auth persist hook failed: %w", errHook)
+			}
 		}
 	}
 	return nil
@@ -573,11 +585,19 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	return h.buildAuthFromFileDataWithParser(path, data, parser)
 }
 
-// buildAuthFromFileDataWithParser builds the auth record for an auth file written
-// through the management API. The plugin parser must be consulted exactly like the
-// file watcher does; otherwise the API registers a path-derived ID while the
-// watcher registers the plugin-assigned ID, and one credential appears twice.
+// buildAuthFromFileDataWithParser keeps the historical single-record API for callers that need it.
 func (h *Handler) buildAuthFromFileDataWithParser(path string, data []byte, parser synthesizer.PluginAuthParser) (*coreauth.Auth, error) {
+	auths, err := h.buildAuthRecordsFromFileDataWithParser(path, data, parser)
+	if err != nil || len(auths) == 0 {
+		return nil, err
+	}
+	return auths[0], nil
+}
+
+// buildAuthRecordsFromFileDataWithParser preserves every record returned by a
+// plugin-owned multi-auth file. A handled-empty plugin result deliberately
+// returns no records and must not fall back to a path-derived credential.
+func (h *Handler) buildAuthRecordsFromFileDataWithParser(path string, data []byte, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, error) {
 	if path == "" {
 		return nil, fmt.Errorf("auth path is empty")
 	}
@@ -611,7 +631,7 @@ func (h *Handler) buildAuthFromFileDataWithParser(path string, data []byte, pars
 	if authID == "" {
 		authID = path
 	}
-	auth := (*coreauth.Auth)(nil)
+	var generated []*coreauth.Auth
 	var recorder *pluginOwnershipRecorder
 	if h != nil && h.cfg != nil {
 		sctx := &synthesizer.SynthesisContext{
@@ -624,12 +644,36 @@ func (h *Handler) buildAuthFromFileDataWithParser(path string, data []byte, pars
 			recorder = &pluginOwnershipRecorder{parser: parser}
 			sctx.PluginAuthParser = recorder
 		}
-		generated, errSynthesize := synthesizer.SynthesizeAuthFile(sctx, path, data)
+		var errSynthesize error
+		generated, errSynthesize = synthesizer.SynthesizeAuthFile(sctx, path, data)
 		if errSynthesize != nil {
 			return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errSynthesize)
 		}
-		if len(generated) > 0 && generated[0] != nil {
-			auth = generated[0].Clone()
+	}
+	if recorder != nil && recorder.claimed {
+		out := make([]*coreauth.Auth, 0, len(generated))
+		for index, generatedAuth := range generated {
+			if generatedAuth == nil {
+				continue
+			}
+			if strings.TrimSpace(generatedAuth.ID) == "" {
+				if len(generated) == 1 {
+					generatedAuth.ID = authID
+				} else {
+					generatedAuth.ID = fmt.Sprintf("%s#%d", authID, index)
+				}
+			}
+			h.prepareManagedAuthRecord(generatedAuth, path, authID, hasLastRefresh, lastRefresh, true)
+			out = append(out, generatedAuth.Clone())
+		}
+		return out, nil
+	}
+
+	var auth *coreauth.Auth
+	for _, generatedAuth := range generated {
+		if generatedAuth != nil {
+			auth = generatedAuth.Clone()
+			break
 		}
 	}
 	if auth == nil {
@@ -647,10 +691,13 @@ func (h *Handler) buildAuthFromFileDataWithParser(path string, data []byte, pars
 			UpdatedAt: time.Now(),
 		}
 	}
-	// A plugin that claims the file owns its auth ID; every other provider keeps
-	// the path-derived ID.
-	if recorder == nil || !recorder.claimed || strings.TrimSpace(auth.ID) == "" {
-		auth.ID = authID
+	h.prepareManagedAuthRecord(auth, path, authID, hasLastRefresh, lastRefresh, false)
+	return []*coreauth.Auth{auth}, nil
+}
+
+func (h *Handler) prepareManagedAuthRecord(auth *coreauth.Auth, path, fallbackID string, hasLastRefresh bool, lastRefresh time.Time, preserveID bool) {
+	if !preserveID || strings.TrimSpace(auth.ID) == "" {
+		auth.ID = fallbackID
 	}
 	auth.FileName = filepath.Base(path)
 	if hasLastRefresh {
@@ -669,7 +716,6 @@ func (h *Handler) buildAuthFromFileDataWithParser(path string, data []byte, pars
 		}
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(auth)
-	return auth, nil
 }
 
 func (h *Handler) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) error {
@@ -685,13 +731,24 @@ func (h *Handler) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) err
 	return err
 }
 
-func (h *Handler) removeConflictingFileAuths(ctx context.Context, auth *coreauth.Auth) {
-	path := authFilePath(auth)
-	if path == "" {
+func (h *Handler) upsertAuthRecords(ctx context.Context, auths []*coreauth.Auth) error {
+	for _, auth := range auths {
+		if err := h.upsertAuthRecord(ctx, auth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Handler) removeConflictingFileAuthsAtPath(ctx context.Context, path string, keepIDs map[string]struct{}) {
+	if h == nil || h.authManager == nil || path == "" {
 		return
 	}
 	for _, existing := range h.authManager.List() {
-		if existing == nil || existing.ID == auth.ID || existing.AuthSourceKind() != coreauth.AuthSourceFile {
+		if existing == nil || existing.AuthSourceKind() != coreauth.AuthSourceFile {
+			continue
+		}
+		if _, keep := keepIDs[existing.ID]; keep {
 			continue
 		}
 		if sameAuthFilePath(path, authFilePath(existing)) {

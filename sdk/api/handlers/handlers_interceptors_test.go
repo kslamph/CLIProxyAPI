@@ -1696,6 +1696,29 @@ func TestWriteModelListResponse_ExposesResponseToPluginInterceptors(t *testing.T
 	}
 }
 
+func TestWriteModelListResponse_PreservesAllowedCodexSlugForDetail(t *testing.T) {
+	handler := &BaseAPIHandler{}
+	handler.SetPluginHost(&handlerInterceptorTestHost{
+		interceptResponse: func(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+			return pluginapi.ResponseInterceptResponse{Body: []byte(`{"object":"list","data":[{"slug":"gpt-5","created":1}]}`)}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models/gpt-5", nil)
+	ctx.Set(sdkaccess.ModelPolicyContextKey, sdkaccess.NewModelPolicy([]string{"gpt-5"}, nil))
+	ctx.Set(ModelDetailIDContextKey, "gpt-5")
+	handler.WriteModelListResponse(ctx, "openai", gin.H{"object": "list", "data": []map[string]any{{"slug": "gpt-5"}}})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"slug":"gpt-5"`) {
+		t.Fatalf("body = %s, want preserved slug entry", rec.Body.String())
+	}
+}
+
 func TestWriteModelListResponse_ReFiltersPluginReplacementForRestrictedKey(t *testing.T) {
 	handler := &BaseAPIHandler{}
 	handler.SetPluginHost(&handlerInterceptorTestHost{

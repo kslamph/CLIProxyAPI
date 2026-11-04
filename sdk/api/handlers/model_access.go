@@ -84,7 +84,7 @@ func filterOJSONModelArray(c *gin.Context, result ojson.Result) []byte {
 			continue
 		}
 		name := ""
-		for _, field := range []string{"id", "name"} {
+		for _, field := range []string{"id", "name", "slug"} {
 			value := item.Get(field)
 			if value.Type == ojson.String && value.Str != "" {
 				name = strings.TrimPrefix(value.Str, "models/")
@@ -105,7 +105,7 @@ func filterOJSONModelArray(c *gin.Context, result ojson.Result) []byte {
 }
 
 func listedModelName(model map[string]any) string {
-	for _, field := range []string{"id", "name"} {
+	for _, field := range []string{"id", "name", "slug"} {
 		if name, _ := model[field].(string); name != "" {
 			return strings.TrimPrefix(name, "models/")
 		}

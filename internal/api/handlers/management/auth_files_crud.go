@@ -296,18 +296,17 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
-	if len(auths) > 0 {
-		var lockAuth *coreauth.Auth
-		for _, auth := range auths {
-			if h.shouldLockCodexAuthFile(auth) {
-				lockAuth = auth
-				break
-			}
+	var lockAuth *coreauth.Auth
+	for _, auth := range auths {
+		if h.shouldLockCodexAuthFile(auth) {
+			lockAuth = auth
+			break
 		}
-		if errWrite := h.writeAuthFileBytes(dst, data, lockAuth); errWrite != nil {
-			return fmt.Errorf("failed to write file: %w", errWrite)
-		}
-	} else if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
+	}
+	if lockAuth == nil && h.shouldLockCodexAuthPath(dst) {
+		lockAuth = &coreauth.Auth{Provider: "codex"}
+	}
+	if errWrite := h.writeAuthFileBytes(dst, data, lockAuth); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
 	if err := h.upsertAuthRecords(ctx, auths); err != nil {
@@ -337,6 +336,18 @@ func (h *Handler) writeAuthFileBytes(dst string, data []byte, auth *coreauth.Aut
 		})
 	}
 	return os.WriteFile(dst, data, 0o600)
+}
+
+func (h *Handler) shouldLockCodexAuthPath(path string) bool {
+	if h == nil || h.authManager == nil {
+		return false
+	}
+	for _, existing := range h.authManager.List() {
+		if coreauth.IsCodexAuthRecord(existing) && sameAuthFilePath(path, authFilePath(existing)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) shouldLockCodexAuthFile(auth *coreauth.Auth) bool {

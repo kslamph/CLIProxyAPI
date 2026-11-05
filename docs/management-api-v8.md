@@ -91,6 +91,7 @@ retain the corresponding business operation's fields.
 | `/server/latest-version` | GET | Get latest release information. |
 | `/requests/api-call` | POST | Make an authenticated upstream call. |
 | `/routing/cooldown/reset` | POST | Clear credential cooldown. |
+| `/routing/quota/observation` | POST | Apply fresh quota windows (`auth_index`, `windows[{name, remaining_fraction, reset_at}]`) to a credential: returns `result` of `blocked`, `released` or `unchanged` and `recover_at`. |
 | `/routing/model-definitions/<channel>` | GET | Get model definitions. |
 | `/observability/logs` | GET, DELETE | Read or clear application logs. |
 | `/observability/logs/errors` | GET | List error-log files. |

@@ -235,11 +235,14 @@ sending upstream (then drop the local copy after it lands).
   false = informational, shown in the UI but ignored for routing; decoder accepts
   `gates_routing`): z.ai's `monthly-tools` window must not take a credential out
   of rotation. 429 handling is untouched and stays independent.
-  Every observation writes one info line `quota observation` (`auth_id`, `result`
-  = blocked|released|unchanged, `reason`, `recover_at`, `exhausted` window names,
-  `windows` = `name=remaining@reset,...`) from `Manager.ReconcileQuota`, so the
-  outcome of a UI refresh is visible in the log; nothing is logged when the
-  reconcile itself fails (the callers already warn).
+  Every observation writes one info line from `Manager.ReconcileQuota`, e.g.
+  `quota observation: result=blocked reason="exhausted window with a future reset"
+  recover_at=2026-11-09T00:00:00Z exhausted=weekly windows=rolling=1.00@...,weekly=0.00@...
+  provider=opencode-go auth_id="..."` (`result` = blocked|released|unchanged, `windows` =
+  `name=remaining@reset`). The detail is in the MESSAGE on purpose: the text log
+  formatter (`internal/logging` `logFieldOrder`) silently drops fields outside its
+  allow-list, so only `auth_id` and `provider` are logrus fields. Nothing is logged
+  when the reconcile itself fails (the callers already warn).
 - Files: `sdk/cliproxy/auth/conductor_quota_reconcile.go` (+test),
   `sdk/cliproxy/auth/conductor_cooldown.go` (ResetQuota tail extracted into
   `publishQuotaChange`), `internal/api/handlers/management/plugin_quota.go`

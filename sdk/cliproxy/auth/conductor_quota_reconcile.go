@@ -88,7 +88,14 @@ func EvaluateQuotaWindows(windows []QuotaWindow, now time.Time) (QuotaObservatio
 func (m *Manager) ReconcileQuota(ctx context.Context, authID string, windows []QuotaWindow) (QuotaObservationResult, time.Time, error) {
 	result, recoverAt, err := m.reconcileQuota(ctx, authID, windows)
 	if err == nil && m != nil {
-		logQuotaObservation(strings.TrimSpace(authID), windows, result, recoverAt, time.Now())
+		authID = strings.TrimSpace(authID)
+		provider := ""
+		m.mu.RLock()
+		if auth := m.auths[authID]; auth != nil {
+			provider = auth.Provider
+		}
+		m.mu.RUnlock()
+		logQuotaObservation(authID, provider, windows, result, recoverAt, time.Now())
 	}
 	return result, recoverAt, err
 }
@@ -209,7 +216,7 @@ func (m *Manager) blockCredentialQuota(ctx context.Context, authID string, recov
 // logQuotaObservation records what a quota observation did, so an operator can
 // see from the log alone why a credential was blocked, released or left alone
 // after a quota refresh. It carries only window names, fractions and reset times.
-func logQuotaObservation(authID string, windows []QuotaWindow, result QuotaObservationResult, recoverAt time.Time, now time.Time) {
+func logQuotaObservation(authID, provider string, windows []QuotaWindow, result QuotaObservationResult, recoverAt time.Time, now time.Time) {
 	knownCount := 0
 	var exhausted []string
 	parts := make([]string, 0, len(windows))
@@ -256,12 +263,12 @@ func logQuotaObservation(authID string, windows []QuotaWindow, result QuotaObser
 	if len(exhausted) > 0 {
 		exhaustedText = strings.Join(exhausted, ",")
 	}
+	// The text log formatter prints only an allow-listed set of fields, so the
+	// outcome itself lives in the message; auth_id and provider stay fields
+	// (both are printed) for correlation with other lines of the same credential.
 	log.WithFields(log.Fields{
-		"auth_id":    authID,
-		"result":     string(result),
-		"reason":     reason,
-		"recover_at": recover,
-		"exhausted":  exhaustedText,
-		"windows":    strings.Join(parts, ","),
-	}).Info("quota observation")
+		"auth_id":  authID,
+		"provider": provider,
+	}).Infof("quota observation: result=%s reason=%q recover_at=%s exhausted=%s windows=%s",
+		result, reason, recover, exhaustedText, strings.Join(parts, ","))
 }

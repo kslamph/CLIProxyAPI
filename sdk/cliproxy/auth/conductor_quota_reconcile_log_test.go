@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
@@ -133,26 +134,26 @@ func TestReconcileQuotaLogsObservationOutcome(t *testing.T) {
 			if len(entries) != 1 {
 				t.Fatalf("got %d quota observation info entries, want exactly 1 (all entries: %v)", len(entries), hook.AllEntries())
 			}
-			data := entries[0].Data
-			if data["auth_id"] != id {
-				t.Errorf("auth_id = %v, want %s", data["auth_id"], id)
+			// The text formatter only prints fields in its allow-list, so the outcome
+			// must be readable in the FORMATTED line, not just in entry.Data.
+			formatted, errFormat := (&internallogging.LogFormatter{}).Format(entries[0])
+			if errFormat != nil {
+				t.Fatalf("format: %v", errFormat)
 			}
-			if data["result"] != string(tc.wantResult) {
-				t.Errorf("result = %v, want %s", data["result"], tc.wantResult)
+			line := string(formatted)
+			wantParts := []string{
+				"quota observation",
+				`auth_id="` + id + `"`,
+				"provider=opencode-go",
+				"result=" + string(tc.wantResult),
+				"reason=\"" + tc.wantReason + "\"",
+				"recover_at=" + tc.wantRecover,
+				"exhausted=" + tc.wantExhaust,
 			}
-			if data["reason"] != tc.wantReason {
-				t.Errorf("reason = %v, want %q", data["reason"], tc.wantReason)
-			}
-			if data["recover_at"] != tc.wantRecover {
-				t.Errorf("recover_at = %v, want %q", data["recover_at"], tc.wantRecover)
-			}
-			if data["exhausted"] != tc.wantExhaust {
-				t.Errorf("exhausted = %v, want %q", data["exhausted"], tc.wantExhaust)
-			}
-			summary, _ := data["windows"].(string)
-			for _, want := range tc.wantWindows {
-				if !strings.Contains(summary, want) {
-					t.Errorf("windows = %q, want it to contain %q", summary, want)
+			wantParts = append(wantParts, tc.wantWindows...)
+			for _, want := range wantParts {
+				if !strings.Contains(line, want) {
+					t.Errorf("formatted log line missing %q:\n%s", want, strings.TrimSpace(line))
 				}
 			}
 		})

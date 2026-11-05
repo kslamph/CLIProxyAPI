@@ -85,7 +85,15 @@ long-lived `scratch/*` branches.
 2. Read `~/devops/docs/README.md` first and follow `~/devops/docs/providers/cpa-lxc.md`
    (production is LXC 115; never infer the target from this repo's docs alone).
 3. Deploy and run the post-deploy checks (see **Deploy and post-deploy checks**).
-4. Only after the checks pass:
+   **Mandatory 15-minute watch:** every deployment is monitored for 15 minutes
+   after the new process is listening, and compared with the last accepted
+   baseline (request success, latency, CPU, memory, goroutines, restarts, new
+   error shapes). No baseline for the running version -> establish one first.
+   Tool, guard rails and baseline files: `~/devops/docs/runbooks/cpa-deploy.md`,
+   `~/devops/ops/cpa-health.py`, `~/devops/ops/cpa-baselines/`. A deploy is not
+   done, and its tag/push/History row is not written, until the watch verdict
+   is `pass`; a `fail` verdict means roll back.
+4. Only after the watch passes:
    `GIT_EDITOR=true git tag -a deploy/vX.Y.Z-N -m "<host> <date>: <summary>" <commit>`;
    `git push kslamph custom deploy/vX.Y.Z-N`.
 5. Update this file (History row, base tag, dropped/changed patches), commit it
@@ -109,10 +117,11 @@ from the old tag, so `custom` keeps moving forward.
   into patch commits.
 
 State at 2026-11-05: `custom` = upstream v8.0.56 merged (`687e9395`) on top of
-`09c8d426` (upstream v8.0.55 + P1-P3 + local pluginhost/memory work). The live
-build on LXC 115 is still `09c8d426` (`deploy/v8.0.55-1`); v8.0.56 is merged,
-built and tested but **not deployed**. P1-P3 verified unaffected by the sync
-(no conflicts; upstream still lists `gpt-6.1-terra` in its catalog, so P2 stays).
+`09c8d426` (upstream v8.0.55 + P1-P3 + local pluginhost/memory work). **Live on
+LXC 115: `1f846852` (`v8.0.56-custom`, tag `deploy/v8.0.56-1`)**; previous
+`deploy/v8.0.55-1` (`09c8d426`) is the rollback. P1-P3 verified unaffected by
+the sync (no conflicts; upstream still lists `gpt-6.1-terra` in its catalog, so
+P2 stays). 15-minute watch verdict: pass (see History).
 
 Known upstream failure (not ours, reproduces at the bare `v8.0.56` tag):
 `go test ./internal/util` -> `TestInPlaceByteWritesAreReviewed` flags
@@ -263,3 +272,4 @@ file CLIProxyAPI   # must say "dynamically linked"
 | 2026-11-03 | — | cutover | **Production moved from tyooc2 to LXC 115 `cpa-lxc`** (tunnel `cpa-lxc-test` → `cpa.c2ph.com`/`cpam.c2ph.com`); tyooc2 retired as rollback |
 | 2026-11-04 | v8.0.53 | `1f4aa8b9`-dirty | On **LXC 115** (observed by the 2026-11-05 deploy job) |
 | 2026-11-05 | v8.0.55-custom | `09c8d426` | On **LXC 115**: `scratch/v8.0.55-full-integration`; plugins opencode-go v0.2.2 + zai v0.1.2. Same day: streaming keepalive 20→80s, request-log temporarily on for a capture |
+| 2026-11-05 | v8.0.56-custom | `1f846852` | On **LXC 115**, branch `custom`, tag `deploy/v8.0.56-1`; plugins unchanged (opencode-go v0.2.3, zai v0.1.2); config adds `observability.logs.error-logs-max-files: 100`. First deploy under the 15-min watch rule: 60 API POSTs, 0 failures, no restarts/OOM, CPU ~0.8 %, goroutines flat (baseline `~/devops/ops/cpa-baselines/`) |

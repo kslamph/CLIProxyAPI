@@ -47,6 +47,24 @@ const ErrorCodeTransientRateLimit = "transient_rate_limit"
 
 const transientRateLimitErrorCode = ErrorCodeTransientRateLimit
 
+// ErrorCodeOverloadDelegated marks a Codex upstream capacity overload
+// rejection (server_is_overloaded / service_unavailable_error) whose retry is
+// delegated to the client. The public status is reported as 429 with a short
+// local Retry-After, but the rejection reflects upstream capacity, not the
+// credential: no cooldown state is written, session affinity is never
+// rebound, and the request is never replayed on another credential.
+const ErrorCodeOverloadDelegated = "overload_delegated"
+
+const overloadDelegatedErrorCode = ErrorCodeOverloadDelegated
+
+// IsCodexOverloadDelegated reports whether err is a Codex upstream capacity
+// overload rejection whose retry is delegated to the client (no cooldown, no
+// session rebind, no replay on another credential; the client-visible retry
+// hint has been rewritten to a short local value).
+func IsCodexOverloadDelegated(err error) bool {
+	return isCodexOverloadDelegatedError(err)
+}
+
 // Error describes an authentication related failure in a provider agnostic format.
 type Error struct {
 	// Code is a short machine readable identifier.

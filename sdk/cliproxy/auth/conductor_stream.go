@@ -512,6 +512,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
 				return nil, errStream
 			}
+			if isCodexOverloadDelegatedError(errStream) {
+				// Delegated overload ends the attempt: the client retries after the
+				// short hint, so no model-pool hop and no credential failover.
+				return nil, preferredExecutionAttemptError(errStream, upstreamErr)
+			}
 			lastErr = errStream
 			if result.CredentialScope {
 				return nil, preferredExecutionAttemptError(errStream, upstreamErr)
@@ -627,6 +632,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				bootstrapErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 				syncPreferredUpstreamError(&upstreamErr, bootstrapErr)
 				discardStreamChunks(streamResult.Chunks)
+				if isCodexOverloadDelegatedError(bootstrapErr) {
+					// Delegated overload ends the attempt: the client retries after the
+					// short hint, so no model-pool hop and no credential failover.
+					return nil, preferredExecutionAttemptError(bootstrapErr, upstreamErr)
+				}
 				lastErr = bootstrapErr
 				if result.CredentialScope {
 					currentErr := newStreamBootstrapError(bootstrapErr, streamResult.Headers)

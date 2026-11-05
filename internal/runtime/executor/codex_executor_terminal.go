@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
@@ -157,11 +158,15 @@ func codexTerminalStreamErr(eventData []byte) (statusErr, []byte, bool) {
 }
 
 func codexTerminalStreamErrWithCooling(eventData []byte, modelLevelCooling bool) (statusErr, []byte, bool) {
+	return codexTerminalStreamErrForPolicy(codexOverloadPolicy{}, eventData, modelLevelCooling)
+}
+
+func codexTerminalStreamErrForPolicy(policy codexOverloadPolicy, eventData []byte, modelLevelCooling bool) (statusErr, []byte, bool) {
 	body, ok := codexTerminalFailureBody(eventData)
 	if !ok || !codexTerminalStreamErrShouldHandle(body) {
 		return statusErr{}, nil, false
 	}
-	return newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling), body, true
+	return newCodexStatusErrWithCoolingForPolicy(policy, http.StatusBadRequest, body, modelLevelCooling), body, true
 }
 
 func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
@@ -169,14 +174,18 @@ func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
 }
 
 func codexTerminalFailureErrWithCooling(eventData []byte, modelLevelCooling bool) (statusErr, []byte, bool) {
-	if streamErr, body, ok := codexTerminalStreamErrWithCooling(eventData, modelLevelCooling); ok {
+	return codexTerminalFailureErrForPolicy(codexOverloadPolicy{}, eventData, modelLevelCooling)
+}
+
+func codexTerminalFailureErrForPolicy(policy codexOverloadPolicy, eventData []byte, modelLevelCooling bool) (statusErr, []byte, bool) {
+	if streamErr, body, ok := codexTerminalStreamErrForPolicy(policy, eventData, modelLevelCooling); ok {
 		return streamErr, body, true
 	}
 	body, ok := codexTerminalFailureBody(eventData)
 	if !ok {
 		return statusErr{}, nil, false
 	}
-	return newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling), body, true
+	return newCodexStatusErrWithCoolingForPolicy(policy, codexTerminalFailureStatus(body), body, modelLevelCooling), body, true
 }
 
 func codexTerminalFailureStatus(body []byte) int {
@@ -323,10 +332,50 @@ func newCodexStatusErrWithHeaders(statusCode int, headers http.Header, body []by
 }
 
 func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling bool) statusErr {
-	return newCodexStatusErrWithHeadersAndCooling(statusCode, nil, body, modelLevelCooling)
+	return newCodexStatusErrWithCoolingForPolicy(codexOverloadPolicy{}, statusCode, body, modelLevelCooling)
+}
+
+func newCodexStatusErrWithCoolingForPolicy(policy codexOverloadPolicy, statusCode int, body []byte, modelLevelCooling bool) statusErr {
+	return newCodexStatusErrForPolicy(policy, statusCode, nil, body, modelLevelCooling)
 }
 
 func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) statusErr {
+	return newCodexStatusErrForPolicy(codexOverloadPolicy{}, statusCode, headers, body, modelLevelCooling)
+}
+
+// codexOverloadPolicy carries the executor configuration that shapes Codex capacity
+// overload rejections. A zero value is the kill switch: overload errors keep today's
+// passthrough, cooldown and failover behaviour.
+type codexOverloadPolicy struct {
+	// retryAfterSeconds is the client-visible retry hint; > 0 enables delegation.
+	retryAfterSeconds int
+}
+
+func codexOverloadPolicyFromConfig(cfg *config.Config) codexOverloadPolicy {
+	if cfg == nil {
+		return codexOverloadPolicy{}
+	}
+	return codexOverloadPolicy{retryAfterSeconds: cfg.Codex.OverloadRetryAfterSecondsValue()}
+}
+
+// newCodexStatusErrForPolicy builds the codex statusErr. When the overload policy is
+// enabled and the body is a Codex capacity overload rejection, the rejection is
+// delegated to the client: it is reported as 429 with the configured short retry
+// hint (both on the error and in the rewritten error.headers of the body), and it
+// carries the overloadDelegated marker so the conductor neither cools the credential
+// nor re-dispatches the request. Every other error class is byte-identical to the
+// policy-off behaviour.
+func newCodexStatusErrForPolicy(policy codexOverloadPolicy, statusCode int, headers http.Header, body []byte, modelLevelCooling bool) statusErr {
+	if policy.retryAfterSeconds > 0 && isCodexServerOverloadError(body) {
+		body = rewriteCodexOverloadRetryHint(body, policy.retryAfterSeconds)
+		retryAfter := time.Duration(policy.retryAfterSeconds) * time.Second
+		return statusErr{
+			code:              http.StatusTooManyRequests,
+			msg:               string(body),
+			retryAfter:        &retryAfter,
+			overloadDelegated: true,
+		}
+	}
 	errCode := statusCode
 	isUsageLimit := isCodexUsageLimitError(body)
 	credentialScoped := isUsageLimit && !modelLevelCooling
@@ -528,6 +577,61 @@ func isCodexUsageLimitError(errorBody []byte) bool {
 	return false
 }
 
+// isCodexServerOverloadError reports whether the error body is the Codex upstream capacity
+// overload rejection: error.code "server_is_overloaded" or error.type
+// "service_unavailable_error", carried inside an HTTP 200 stream right after the handshake
+// events together with an error.headers retry hint (observed values: x-retry-metadata
+// "NO_MORE_RETRY", retry-after "316", retry-after-ms "316000"). Rate-limit and quota
+// rejections are excluded by their own code/type even when the type alone would match,
+// so they keep their existing handling.
+func isCodexServerOverloadError(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	// Both layouts occur on the wire: a bare error event carries error.*, while a
+	// response.failed event nests the same object under response.error.*.
+	for _, prefix := range []string{"error.", "response.error."} {
+		errorType := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, prefix+"type").String()))
+		errorCode := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, prefix+"code").String()))
+		switch {
+		case errorCode == "rate_limit_exceeded", errorCode == "rate_limit_error", errorCode == "usage_limit_reached":
+			continue
+		case errorType == "rate_limit_error", errorType == "usage_limit_reached":
+			continue
+		case errorCode == "server_is_overloaded", errorType == "service_unavailable_error":
+			return true
+		}
+	}
+	return false
+}
+
+// rewriteCodexOverloadRetryHint replaces the upstream retry hint inside the error object's
+// headers with the configured short hint: retry-after "<seconds>", retry-after-ms
+// "<ms>" and no x-retry-metadata (the official Codex client sleeps exactly the hinted
+// seconds and never reads x-retry-metadata). Everything else in the body - type, code,
+// message, param, sequence_number - is preserved byte-for-byte semantically. Both the
+// bare error and the response.failed layouts are rewritten when present.
+func rewriteCodexOverloadRetryHint(body []byte, seconds int) []byte {
+	doc := ojson.NewDoc(body)
+	rewritten := false
+	for _, prefix := range []string{"error.headers.", "response.error.headers."} {
+		if !ojson.GetBytesNoCopy(body, strings.TrimSuffix(prefix, ".")).IsObject() {
+			continue
+		}
+		_ = doc.Set(prefix+"retry-after", strconv.Itoa(seconds))
+		_ = doc.Set(prefix+"retry-after-ms", strconv.Itoa(seconds*1000))
+		_ = doc.Delete(prefix + "x-retry-metadata")
+		rewritten = true
+	}
+	if !rewritten {
+		// No headers object to rewrite (unexpected shape): create the canonical one
+		// so the client still receives the short hint.
+		_ = doc.Set("error.headers.retry-after", strconv.Itoa(seconds))
+		_ = doc.Set("error.headers.retry-after-ms", strconv.Itoa(seconds*1000))
+	}
+	return doc.Bytes()
+}
+
 func parseCodexRetryAfter(statusCode int, errorBody []byte, now time.Time) *time.Duration {
 	if statusCode != http.StatusTooManyRequests || len(errorBody) == 0 {
 		return nil
@@ -714,7 +818,11 @@ func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
 // change would alter cooldown classification and retry-after parsing for everyone. Keeping 503
 // scoped to this path means disabling the feature restores the previous behaviour exactly.
 func newCodexBootstrapOverloadErr(body []byte) statusErr {
-	return newCodexStatusErr(http.StatusServiceUnavailable, body)
+	return newCodexBootstrapOverloadErrForPolicy(codexOverloadPolicy{}, body)
+}
+
+func newCodexBootstrapOverloadErrForPolicy(policy codexOverloadPolicy, body []byte) statusErr {
+	return newCodexStatusErrForPolicy(policy, http.StatusServiceUnavailable, nil, body, false)
 }
 
 // isCodexOverloadBootstrapFailure reports whether a terminal failure delivered inside an HTTP 200
@@ -722,6 +830,22 @@ func newCodexBootstrapOverloadErr(body []byte) statusErr {
 // Only these failures justify replacing the whole attempt during bootstrap; every other terminal
 // failure keeps the original in-stream delivery semantics so downstream behaviour is unchanged.
 func isCodexOverloadBootstrapFailure(body []byte) bool {
+	return isCodexOverloadBootstrapFailureForPolicy(codexOverloadPolicy{}, body)
+}
+
+func isCodexOverloadBootstrapFailureForPolicy(policy codexOverloadPolicy, body []byte) bool {
+	// With delegation enabled a pure capacity overload must not fail the attempt over:
+	// the request ends with the rewritten error so the CLIENT retries, on the same
+	// credential, after the short hint. Every other overload-shaped class (per-turn
+	// admission limits, generic rate limits, retryable server errors) keeps the
+	// bootstrap failover, and the kill switch restores the previous behaviour exactly.
+	if policy.retryAfterSeconds > 0 && isCodexServerOverloadError(body) {
+		return false
+	}
+	return isCodexOverloadBootstrapFailureUnclassified(body)
+}
+
+func isCodexOverloadBootstrapFailureUnclassified(body []byte) bool {
 	if isCodexTransientCapacityError(body) {
 		return true
 	}

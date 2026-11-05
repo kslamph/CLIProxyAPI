@@ -1992,6 +1992,11 @@ func resultErrorFromError(err error) *Error {
 		// Preserve the local truncation classification alongside the public
 		// 502 status so MarkResult can skip credential cooldown.
 		resultErr.Code = streamTruncatedErrorCode
+	case isCodexOverloadDelegatedError(err):
+		// Preserve the delegated-overload classification alongside the public
+		// 429 status so MarkResult skips credential cooldown and selection keeps
+		// the session bound to the credential the client will retry against.
+		resultErr.Code = overloadDelegatedErrorCode
 	case isTransientRateLimitError(err):
 		// Preserve the transient capacity classification alongside the public
 		// 429 status so MarkResult cools only the reporting model until the
@@ -2032,7 +2037,7 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
-	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)
+	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err) || isCodexOverloadDelegatedResultError(err)
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must
@@ -2527,6 +2532,30 @@ func isTransientRateLimitError(err error) bool {
 
 func isTransientRateLimitResultError(err *Error) bool {
 	return err != nil && err.Code == transientRateLimitErrorCode
+}
+
+// isCodexOverloadDelegatedError reports a Codex upstream capacity overload
+// rejection whose retry is delegated to the client: no cooldown, no session
+// rebind, no replay on another credential. The classification travels through
+// the shared executor contract, so only executors that explicitly vouch for
+// the delegation opt in.
+func isCodexOverloadDelegatedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	delegated, ok := errors.AsType[cliproxyexecutor.CodexOverloadDelegatedError](err)
+	if ok && delegated != nil && delegated.IsCodexOverloadDelegated() {
+		return true
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil && authErr.Code == overloadDelegatedErrorCode {
+		return true
+	}
+	return false
+}
+
+func isCodexOverloadDelegatedResultError(err *Error) bool {
+	return err != nil && err.Code == overloadDelegatedErrorCode
 }
 
 func isCredentialScopedError(err error) bool {

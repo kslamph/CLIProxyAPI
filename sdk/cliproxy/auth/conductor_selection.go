@@ -1477,6 +1477,13 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
+	// A delegated Codex capacity overload ends the request here by design: the
+	// client retries after the short rewritten hint, and session affinity keeps
+	// landing those retries on the same credential. No cooldown was recorded, so
+	// a retry round would only burn another credential's prompt cache.
+	if isCodexOverloadDelegatedError(err) {
+		return 0, false
+	}
 	if m.HomeEnabled() {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {

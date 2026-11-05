@@ -155,6 +155,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout) != strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout) {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-timeout: %s -> %s", strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout), strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout)))
 	}
+	if oldCfg.Codex.OverloadRetryAfterSecondsValue() != newCfg.Codex.OverloadRetryAfterSecondsValue() {
+		changes = append(changes, fmt.Sprintf("codex.overload-retry-after-seconds: %d -> %d", oldCfg.Codex.OverloadRetryAfterSecondsValue(), newCfg.Codex.OverloadRetryAfterSecondsValue()))
+	}
 	if oldCfg.Client.Codex.OptimizeMultiAgentV2 != newCfg.Client.Codex.OptimizeMultiAgentV2 {
 		changes = append(changes, fmt.Sprintf("client.codex.optimize-multi-agent-v2: %t -> %t", oldCfg.Client.Codex.OptimizeMultiAgentV2, newCfg.Client.Codex.OptimizeMultiAgentV2))
 	}

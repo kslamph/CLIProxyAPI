@@ -482,6 +482,21 @@ upstream:
     # than cooling down the entire credential across all sibling models.
     # Default: false
     model-level-cooling: false
+    # Client retry hint (seconds) reported for Codex capacity overload rejections
+    # (error.code "server_is_overloaded" / error.type "service_unavailable_error",
+    # delivered inside an HTTP 200 stream right after the handshake events, with an
+    # error.headers hint such as retry-after "316" and x-retry-metadata "NO_MORE_RETRY").
+    # Such a rejection is capacity noise, not a credential fault: with this enabled the
+    # failing credential is never cooled down, the request is never re-dispatched to
+    # another credential (session affinity keeps the next client retry on the same
+    # credential), and the client is told to retry after this many seconds - every frame
+    # carrying the error gets retry-after "<N>" / retry-after-ms "<N*1000>" with
+    # x-retry-metadata removed, and when response headers are still uncommitted the
+    # request fails as HTTP 429 with a matching Retry-After header. Set to 0 (or any
+    # negative value) to keep the upstream hint untouched and today's cooldown/failover
+    # behaviour (kill switch).
+    # Default: 5
+    overload-retry-after-seconds: 5
 
   claude:
     # When true, scope quota cooldowns to the requested model rather than cooling down

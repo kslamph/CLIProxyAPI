@@ -766,11 +766,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			}
 			if !firstResponse && (eventType == "error" || eventType == "response.failed") {
 				var credentialErr error
-				if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
+				if wsErr, ok := parseCodexWebsocketErrorForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
 					credentialErr = wsErr
-				} else if streamErr, _, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
+				} else if streamErr, _, ok := codexTerminalFailureErrForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
 					credentialErr = streamErr
 				}
+				payload = rewriteCodexDuplexOverloadPayload(e.errPolicy(), payload)
 				var status interface{ StatusCode() int }
 				if errors.As(credentialErr, &status) && (status.StatusCode() == http.StatusUnauthorized || status.StatusCode() == http.StatusForbidden || status.StatusCode() == http.StatusTooManyRequests) {
 					// Account health is independent of which queued request failed.
@@ -823,10 +824,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			// metadata that belongs to this event. Only the first rejection can
 			// enter conductor bootstrap retry; later failures stay on this socket.
 			var terminalErr, replayErr error
-			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
+			if wsErr, ok := parseCodexWebsocketErrorForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
 				terminalErr = wsErr
 				replayErr = clearCodexReasoningReplayOnWebsocketError(ctx, eventPrepared.replayScope, payload)
-			} else if streamErr, body, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
+			} else if streamErr, body, ok := codexTerminalFailureErrForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
 				terminalErr = streamErr
 				replayErr = clearCodexReasoningReplayOnInvalidSignature(ctx, eventPrepared.replayScope, streamErr.StatusCode(), body)
 			}
@@ -837,6 +838,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return
 			}
 			if terminalErr != nil {
+				// The raw error frame is forwarded below as a payload, so rewrite its
+				// retry hint the same way the Err classification was shaped.
+				payload = rewriteCodexDuplexOverloadPayload(e.errPolicy(), payload)
 				var status interface{ StatusCode() int }
 				terminalBusinessRejection = errors.As(terminalErr, &status) && status.StatusCode() == http.StatusBadRequest
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)

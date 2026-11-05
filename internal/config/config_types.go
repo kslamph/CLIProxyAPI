@@ -329,6 +329,33 @@ type CodexConfig struct {
 	// for Codex Sign in with ChatGPT (SIWC) OAuth authorization and API requests.
 	// Defaults to "CLIProxyAPI".
 	SignInWithChatGPTIdentifier string `yaml:"signin-with-chatgpt-identifier,omitempty" json:"signin-with-chatgpt-identifier,omitempty"`
+	// OverloadRetryAfterSeconds rewrites the client-visible retry hint for Codex capacity
+	// overload rejections (error.code "server_is_overloaded" / error.type
+	// "service_unavailable_error"). Such a rejection is time-of-day capacity noise, not a
+	// credential fault, so with this enabled the failing credential is never cooled, the
+	// request is never re-dispatched to another credential, and the client is told to retry
+	// after this many seconds (both the SSE error frame's error.headers and, when response
+	// headers are still uncommitted, the HTTP status 429 with a Retry-After header). An
+	// explicit 0 or negative value is a kill switch: the upstream hint is passed through
+	// untouched and today's cooldown/failover behaviour is kept. Default 5 when unset.
+	OverloadRetryAfterSeconds *int `yaml:"overload-retry-after-seconds,omitempty" json:"overload-retry-after-seconds,omitempty"`
+}
+
+// DefaultCodexOverloadRetryAfterSeconds is the client retry hint (in seconds) CPA reports
+// for Codex capacity overload rejections when overload-retry-after-seconds is unset.
+const DefaultCodexOverloadRetryAfterSeconds = 5
+
+// OverloadRetryAfterSecondsValue resolves the effective client retry hint for Codex
+// capacity overload rejections. An unset key means the default; an explicit value <= 0
+// means the kill switch and resolves to 0.
+func (c *CodexConfig) OverloadRetryAfterSecondsValue() int {
+	if c == nil || c.OverloadRetryAfterSeconds == nil {
+		return DefaultCodexOverloadRetryAfterSeconds
+	}
+	if *c.OverloadRetryAfterSeconds <= 0 {
+		return 0
+	}
+	return *c.OverloadRetryAfterSeconds
 }
 
 // WebsocketCompressionEnabled reports whether WebSocket compression is enabled.

@@ -33,11 +33,21 @@ const (
 )
 
 func codexBufferingConfig(enabled bool) *config.Config {
-	return &config.Config{Codex: config.CodexConfig{StreamBootstrapBuffering: enabled}}
+	// P5 pins these feature tests to the kill switch: with overload delegation
+	// enabled (the new default) a pure server_is_overloaded rejection is
+	// delivered in-stream instead of failing the attempt over, which is covered
+	// separately in codex_overload_retry_hint_test.go.
+	return codexBufferingKillSwitch(&config.Config{Codex: config.CodexConfig{StreamBootstrapBuffering: enabled}})
+}
+
+func codexBufferingKillSwitch(cfg *config.Config) *config.Config {
+	zero := 0
+	cfg.Codex.OverloadRetryAfterSeconds = &zero
+	return cfg
 }
 
 func codexBufferingConfigWithTimeout(enabled bool, timeout string) *config.Config {
-	return &config.Config{Codex: config.CodexConfig{StreamBootstrapBuffering: enabled, StreamBootstrapTimeout: timeout}}
+	return codexBufferingKillSwitch(&config.Config{Codex: config.CodexConfig{StreamBootstrapBuffering: enabled, StreamBootstrapTimeout: timeout}})
 }
 
 func codexTestAuth(baseURL string) *cliproxyauth.Auth {
@@ -1011,7 +1021,7 @@ func TestCodexExecutor_BootstrapBuffering_DefaultDisabledPassthrough(t *testing.
 	defer server.Close()
 
 	req, opts := codexTestRequest()
-	result, err := NewCodexExecutor(&config.Config{}).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	result, err := NewCodexExecutor(codexBufferingKillSwitch(&config.Config{})).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
 	if err != nil {
 		t.Fatalf("default unbuffered ExecuteStream returned error at call time: %v", err)
 	}
@@ -1223,7 +1233,7 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_DefaultDisabledPassthrough(t
 	defer server.Close()
 
 	req, opts := codexWebsocketRequest()
-	result, err := NewCodexWebsocketsExecutor(&config.Config{}).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	result, err := NewCodexWebsocketsExecutor(codexBufferingKillSwitch(&config.Config{})).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
 	if err != nil {
 		t.Fatalf("default unbuffered ExecuteStream returned error at call time: %v", err)
 	}

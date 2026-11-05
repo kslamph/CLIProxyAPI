@@ -30,6 +30,10 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 }
 
 func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool) (error, bool) {
+	return parseCodexWebsocketErrorForPolicy(codexOverloadPolicy{}, payload, modelLevelCooling)
+}
+
+func parseCodexWebsocketErrorForPolicy(policy codexOverloadPolicy, payload []byte, modelLevelCooling bool) (error, bool) {
 	if len(payload) == 0 {
 		return nil, false
 	}
@@ -46,6 +50,20 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
 
 	out := buildCodexWebsocketErrorPayload(payload, status)
 	headers := parseCodexWebsocketErrorHeaders(payload)
+	if policy.retryAfterSeconds > 0 && isCodexServerOverloadError(out) {
+		// Same delegated-overload shaping as the HTTP/SSE constructor: 429 with the
+		// short local hint and rewritten body headers, plus the marker that keeps the
+		// credential selectable and stops re-dispatch in the conductor.
+		out = rewriteCodexOverloadRetryHint(out, policy.retryAfterSeconds)
+		retryAfter := time.Duration(policy.retryAfterSeconds) * time.Second
+		statusError := statusErr{
+			code:              http.StatusTooManyRequests,
+			msg:               string(out),
+			retryAfter:        &retryAfter,
+			overloadDelegated: true,
+		}
+		return statusErrWithHeaders{statusErr: statusError, headers: headers}, true
+	}
 	isUsageLimit := isCodexUsageLimitError(out)
 	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(out)
 	statusError := statusErr{
@@ -103,6 +121,17 @@ func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
 	_ = doc.Set("error.type", "server_error")
 	_ = doc.Set("error.message", http.StatusText(status))
 	return doc.Bytes()
+}
+
+// rewriteCodexDuplexOverloadPayload rewrites the retry hint of a raw error frame the
+// duplex executor forwards as a payload, so the client-visible frame cannot carry the
+// upstream's long overload hint when the delegation policy is enabled. Non-overload
+// frames and the kill switch return the payload unchanged.
+func rewriteCodexDuplexOverloadPayload(policy codexOverloadPolicy, payload []byte) []byte {
+	if policy.retryAfterSeconds <= 0 || !isCodexServerOverloadError(payload) {
+		return payload
+	}
+	return rewriteCodexOverloadRetryHint(payload, policy.retryAfterSeconds)
 }
 
 func isCodexWebsocketConnectionLimitError(payload []byte) bool {

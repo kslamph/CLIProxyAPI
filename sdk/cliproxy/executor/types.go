@@ -320,3 +320,15 @@ type TransientRateLimitError interface {
 	error
 	IsTransientRateLimit() bool
 }
+
+// CodexOverloadDelegatedError identifies a Codex upstream capacity overload
+// rejection (server_is_overloaded / service_unavailable_error) whose retry is
+// delegated to the client. The rejection reflects upstream capacity, not the
+// credential: auth managers must not cool the credential, must not rebind
+// session affinity, and must not replay the request on another credential;
+// the client-visible retry hint has been rewritten to a short local value so
+// the client itself retries promptly.
+type CodexOverloadDelegatedError interface {
+	error
+	IsCodexOverloadDelegated() bool
+}

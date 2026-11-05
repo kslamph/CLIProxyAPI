@@ -33,6 +33,15 @@ func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
 	}
 }
 
+// errPolicy exposes the executor's Codex overload delegation policy; the
+// websocket executor embeds CodexExecutor, so this is the same config.
+func (e *CodexWebsocketsExecutor) errPolicy() codexOverloadPolicy {
+	if e == nil || e.CodexExecutor == nil {
+		return codexOverloadPolicy{}
+	}
+	return e.CodexExecutor.errPolicy()
+}
+
 // CodexAutoExecutor routes Codex requests to the websocket transport only when:
 //  1. The downstream transport is websocket, and
 //  2. The selected auth enables websockets.

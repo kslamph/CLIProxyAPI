@@ -268,6 +268,62 @@ sending upstream (then drop the local copy after it lands).
   code; keep them as regression guards if upstream lacks equivalents.
 - Upstream: not filed.
 
+### P5 - Codex overload rejections delegated to the client (`local-only`)
+- Commit: branch `codex-overload-retry-hint` (this change).
+- Problem (owner-observed 2026-11-05, LXC 115): the Codex upstream intermittently answers with
+  `server_is_overloaded` / `service_unavailable_error` inside an HTTP 200 SSE stream right after
+  the handshake events, carrying `error.headers` = `x-retry-metadata NO_MORE_RETRY`, `retry-after
+  316`. Owner data says it is capacity/time-of-day noise, unrelated to the credential. CPA used to
+  (a) cool the reporting credential, (b) answer 503 instantly once both paid credentials cooled
+  (69/943 requests, median 270 ms), (c) fail over to the other credential (prompt-cache miss for
+  nothing), and (d) forward the 316 s hint so the official Codex client (0.166.0) slept exactly
+  316 s per its `stream_max_retries` while never reading `x-retry-metadata`.
+- What: new config `upstream.codex.overload-retry-after-seconds` (aliases `codex.` and
+  `oauth.providers.codex.`; `*int`, unset = 5, explicit <= 0 = kill switch). For the overload class
+  ONLY (`error.code server_is_overloaded` / `error.type service_unavailable_error`, rate-limit /
+  quota codes excluded): the statusErr is built as 429 + retryAfter 5 s + `overloadDelegated` marker
+  and its body's `error.headers` is rewritten to `retry-after "5"` / `retry-after-ms "5000"` with
+  `x-retry-metadata` removed (both the bare error and response.failed layouts; the rewrite happens
+  in the executor's error construction, so every client renderer - Responses SSE
+  `response.failed`/`error` frames, uncommitted JSON bodies, chat-completions, Claude - renders the
+  rewritten body; the frame Codex reads is the `response.failed` event's `response.error.headers`).
+  The conductor (`sdk/cliproxy/auth`): new `ErrorCodeOverloadDelegated` classification, cooldown skip
+  via `shouldSkipCredentialCooldown` (no NextRetryAfter/Unavailable/Quota write, quota backoff
+  unmoved), session-affinity rebind skip, no retry rounds / no model-pool hop / no credential
+  failover (stream, non-stream, handler bootstrap retry). When response headers are uncommitted the
+  client gets HTTP 429 + `Retry-After: 5` with the rewritten body. Bootstrap buffering
+  (`codex.stream-bootstrap-buffering`) is unchanged as a feature, but for this class it no longer
+  fails the attempt over - it delivers in-stream; every other overload-shaped class keeps the
+  failover. `codex.stream-bootstrap-buffering` stays default-off.
+- Files: `internal/config/config_types.go` (field + default + accessor), `internal/config/config_v8.go`
+  (aliases), `internal/watcher/diff/config_diff.go` (reload log line), `config.example.yaml`,
+  `internal/runtime/executor/{codex_executor_terminal,codex_executor_stream,codex_executor_execute,
+  codex_executor,codex_openai_images,codex_websockets_errors,codex_websockets_stream,
+  codex_websockets_execute,codex_websockets_duplex,codex_websockets_executor,openai_compat_executor}.go`,
+  `sdk/cliproxy/executor/types.go` (`CodexOverloadDelegatedError`),
+  `sdk/cliproxy/auth/{errors,conductor_cooldown,conductor_selection,conductor_execution,
+  conductor_stream}.go`, `sdk/api/handlers/handlers_stream.go`.
+- Tests: `internal/config/codex_overload_config_test.go`,
+  `internal/runtime/executor/codex_overload_retry_hint_test.go`,
+  `sdk/cliproxy/auth/conductor_overload_delegation_test.go`,
+  `test/codex_overload_retry_hint_test.go` (full-stack /v1/responses with the recorded journal
+  bytes; committed-stream rewrite + no cooldown/failover, uncommitted 429 + Retry-After 5 with a
+  pre-cooled sibling, kill switch restores 316 passthrough + cooldown).
+- Conflict hotspots: `newCodexStatusErrWithHeadersAndCooling` (now `newCodexStatusErrForPolicy`) and
+  `codexTerminalFailureErr*` in `codex_executor_terminal.go`; the failover `continue` sites in
+  `conductor_stream.go` / `conductor_execution.go`; `shouldSkipCredentialCooldown`;
+  `isCodexOverloadBootstrapFailure`. Upstream refactors of the codex error constructors are the
+  usual cause; re-apply the policy check at the constructor and the marker checks at the retry
+  decision points.
+- Verify: `go test ./internal/config/ ./internal/runtime/executor/ ./sdk/cliproxy/auth/ ./test/ -run 'Overload'`
+  plus the full gate (`gofmt -l .`, `go build -o /tmp/cpa-check ./cmd/server`, `go test ./...`).
+- Drop when: upstream stops treating a `server_is_overloaded` rejection as cooling/failover-able
+  (no cooldown, no failover, client-directed retry), or the Codex client stops needing a short
+  `retry-after` to retry promptly (e.g. it starts honouring `NO_MORE_RETRY` semantics or its own
+  capped backoff). Re-run the tests above against upstream's code; keep them as regression guards
+  if upstream lacks equivalents.
+- Upstream: not filed. The behaviour is fork policy (owner decision: simple, no cooldown, sticky).
+
 ## Untracked local files (not patches, do not lose)
 
 `rebuild.sh`, `run.sh` (local dev stack), `deploy-tyooc2-manifest.md` (historical

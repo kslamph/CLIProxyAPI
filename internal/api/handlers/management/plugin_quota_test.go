@@ -1501,3 +1501,112 @@ func TestFetchCredentialQuota_NoQuotaBlockLeavesRoutingStateUntouched(t *testing
 		t.Fatalf("routing state changed: before=%+v after=%+v", before, after)
 	}
 }
+
+func gatesRoutingFalse() *bool { v := false; return &v }
+
+func TestFetchCredentialQuota_NonGatingExhaustedBucketDoesNotBlock(t *testing.T) {
+	monthly := time.Now().Add(240 * time.Hour).Truncate(time.Second)
+	auth := &coreauth.Auth{ID: "gates-no-block", FileName: "gates-no-block.json", Provider: "gates-no-block-provider"}
+	manager, h, authIndex := reconcileFetchHandler(t, auth, []pluginapi.QuotaBucket{
+		{Window: "monthly-tools", RemainingFraction: 0, ResetTime: monthly.UTC().Format(time.RFC3339), GatesRouting: gatesRoutingFalse()},
+		{Window: "5h", RemainingFraction: 0.7, ResetTime: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+	})
+
+	fetchQuotaForTest(t, h, authIndex)
+
+	record, _ := manager.GetByID("gates-no-block")
+	if record.Quota.Exceeded || record.Unavailable || !record.NextRetryAfter.IsZero() {
+		t.Fatalf("non-gating exhausted bucket must not block, got unavailable=%v next=%v quota=%+v", record.Unavailable, record.NextRetryAfter, record.Quota)
+	}
+}
+
+func TestFetchCredentialQuota_NonGatingExhaustedBucketReleasesExistingBlock(t *testing.T) {
+	recoverAt := time.Now().Add(4 * time.Hour)
+	monthly := time.Now().Add(240 * time.Hour).Truncate(time.Second)
+	manager, h, authIndex := reconcileFetchHandler(t, credentialQuotaBlockedAuth("gates-release", recoverAt), []pluginapi.QuotaBucket{
+		{Window: "monthly-tools", RemainingFraction: 0, ResetTime: monthly.UTC().Format(time.RFC3339), GatesRouting: gatesRoutingFalse()},
+		{Window: "5h", RemainingFraction: 0.7, ResetTime: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+	})
+
+	fetchQuotaForTest(t, h, authIndex)
+
+	record, _ := manager.GetByID("gates-release")
+	if record.Quota.Exceeded || !record.Quota.NextRecoverAt.IsZero() || record.Unavailable || !record.NextRetryAfter.IsZero() || record.Status != coreauth.StatusActive {
+		t.Fatalf("expected existing block released, got status=%v unavailable=%v next=%v quota=%+v", record.Status, record.Unavailable, record.NextRetryAfter, record.Quota)
+	}
+}
+
+func TestFetchCredentialQuota_GatingExhaustedBucketBlocksIgnoringNonGatingReset(t *testing.T) {
+	fiveHour := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	monthly := time.Now().Add(240 * time.Hour).Truncate(time.Second)
+	auth := &coreauth.Auth{ID: "gates-block", FileName: "gates-block.json", Provider: "gates-block-provider"}
+	manager, h, authIndex := reconcileFetchHandler(t, auth, []pluginapi.QuotaBucket{
+		{Window: "monthly-tools", RemainingFraction: 0, ResetTime: monthly.UTC().Format(time.RFC3339), GatesRouting: gatesRoutingFalse()},
+		{Window: "5h", RemainingFraction: 0, ResetTime: fiveHour.UTC().Format(time.RFC3339)},
+	})
+
+	fetchQuotaForTest(t, h, authIndex)
+
+	record, _ := manager.GetByID("gates-block")
+	if !record.Quota.Exceeded || !record.Quota.NextRecoverAt.Equal(fiveHour) || !record.NextRetryAfter.Equal(fiveHour) {
+		t.Fatalf("expected block until %v (non-gating reset %v ignored), got next=%v quota=%+v", fiveHour, monthly, record.NextRetryAfter, record.Quota)
+	}
+}
+
+func TestFetchCredentialQuota_ResponseKeepsNonGatingBucket(t *testing.T) {
+	monthly := time.Now().Add(240 * time.Hour).Truncate(time.Second)
+	auth := &coreauth.Auth{ID: "gates-ui", FileName: "gates-ui.json", Provider: "gates-ui-provider"}
+	_, h, authIndex := reconcileFetchHandler(t, auth, []pluginapi.QuotaBucket{
+		{Window: "monthly-tools", RemainingFraction: 0, ResetTime: monthly.UTC().Format(time.RFC3339), GatesRouting: gatesRoutingFalse()},
+		{Window: "5h", RemainingFraction: 0.7},
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/fetch", strings.NewReader(`{"auth_index":"`+authIndex+`"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.FetchCredentialQuota(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp pluginapi.QuotaFetchResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &resp); errDecode != nil {
+		t.Fatalf("decode: %v", errDecode)
+	}
+	if len(resp.Groups) != 1 || len(resp.Groups[0].Buckets) != 2 {
+		t.Fatalf("expected both buckets in UI response, got %+v", resp.Groups)
+	}
+	bucket := resp.Groups[0].Buckets[0]
+	if bucket.Window != "monthly-tools" || bucket.GatesRouting == nil || *bucket.GatesRouting {
+		t.Fatalf("non-gating bucket not preserved: %+v", bucket)
+	}
+}
+
+// TestMapProbeResponseBucketsGateRouting proves declarative quota_probe buckets
+// carry no GatesRouting and therefore still map to observation windows.
+func TestMapProbeResponseBucketsGateRouting(t *testing.T) {
+	resp, err := mapProbeResponse([]byte(`{
+		"groups": [{"displayName": "Limits", "buckets": [{"window": "5h", "remainingFraction": 0}]}],
+		"packages": [{"period": "monthly", "remain": 0, "total": 10}]
+	}`), map[string]any{
+		"groups": []any{map[string]any{
+			"display_name": "Packages", "buckets_path": "packages", "window_key": "period",
+			"remaining_amount_key": "remain", "total_amount_key": "total",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("mapProbeResponse() error = %v", err)
+	}
+	total := 0
+	for _, group := range resp.Groups {
+		for _, bucket := range group.Buckets {
+			total++
+			if bucket.GatesRouting != nil {
+				t.Fatalf("declarative bucket %q has GatesRouting set: %v", bucket.Window, *bucket.GatesRouting)
+			}
+		}
+	}
+	if windows := quotaWindowsFromResponse(resp); total == 0 || len(windows) != total {
+		t.Fatalf("expected all %d declarative buckets to gate routing, got %d windows", total, len(windows))
+	}
+}

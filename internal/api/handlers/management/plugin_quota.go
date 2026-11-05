@@ -314,11 +314,17 @@ func (h *Handler) reconcileQuotaCooldown(ctx context.Context, auth *coreauth.Aut
 	}
 }
 
-// quotaWindowsFromResponse maps every bucket of every group to a quota window.
+// quotaWindowsFromResponse maps every routing-gating bucket of every group to a
+// quota window. Buckets with GatesRouting=false are informational only and are
+// skipped; buckets without the field (including declarative quota_probe
+// buckets) gate routing.
 func quotaWindowsFromResponse(quotaResp pluginapi.QuotaFetchResponse) []coreauth.QuotaWindow {
 	var windows []coreauth.QuotaWindow
 	for _, group := range quotaResp.Groups {
 		for _, bucket := range group.Buckets {
+			if bucket.GatesRouting != nil && !*bucket.GatesRouting {
+				continue
+			}
 			remaining := bucket.RemainingFraction
 			window := coreauth.QuotaWindow{Name: bucket.Window, RemainingFraction: &remaining}
 			if resetAt, errParse := time.Parse(time.RFC3339, strings.TrimSpace(bucket.ResetTime)); errParse == nil {

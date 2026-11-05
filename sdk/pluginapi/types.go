@@ -1844,6 +1844,10 @@ type QuotaBucket struct {
 	RemainingFraction float64 `json:"remainingFraction"`
 	ResetTime         string  `json:"resetTime,omitempty"`
 	Description       string  `json:"description,omitempty"`
+	// GatesRouting marks whether the bucket counts toward routing availability.
+	// Absent or true counts; false keeps the bucket informational (shown in the
+	// UI) but ignored by quota observations.
+	GatesRouting *bool `json:"gatesRouting,omitempty"`
 }
 
 // UnmarshalJSON supports both camelCase and snake_case field names.
@@ -1854,6 +1858,7 @@ func (b *QuotaBucket) UnmarshalJSON(data []byte) error {
 		RemainingFraction    *float64 `json:"remainingFraction"`
 		AltRemainingFraction *float64 `json:"remaining_fraction"`
 		AltResetTime         string   `json:"reset_time"`
+		AltGatesRouting      *bool    `json:"gates_routing"`
 	}{
 		Alias: (*Alias)(b),
 	}
@@ -1867,6 +1872,9 @@ func (b *QuotaBucket) UnmarshalJSON(data []byte) error {
 	}
 	if b.ResetTime == "" && aux.AltResetTime != "" {
 		b.ResetTime = aux.AltResetTime
+	}
+	if b.GatesRouting == nil && aux.AltGatesRouting != nil {
+		b.GatesRouting = aux.AltGatesRouting
 	}
 	return nil
 }

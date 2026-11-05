@@ -119,6 +119,12 @@ retain the corresponding business operation's fields.
 | `/plugins/store/<id>/install` | POST | Install or update a plugin. |
 | `/plugins/<id>/quota` | GET, POST, DELETE | Read, fetch, or reset plugin quota. |
 
+A plugin quota bucket (`groups[].buckets[]`) may set the optional boolean
+`gatesRouting` (alias `gates_routing`). Absent or `true` means the bucket counts
+toward routing availability; `false` keeps it informational: it is still
+returned and shown, but fresh quota observations ignore it, so it can neither
+exhaust the credential nor contribute to the recovery time.
+
 ## OAuth
 
 The login URL is shared by all providers. Set the required `provider` query

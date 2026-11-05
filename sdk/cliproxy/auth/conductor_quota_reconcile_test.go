@@ -2,11 +2,16 @@ package auth
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
+
+// customFillFirstSelector is deliberately not a built-in selector type.
+type customFillFirstSelector struct{ *FillFirstSelector }
 
 func frac(v float64) *float64 { return &v }
 
@@ -276,14 +281,28 @@ func TestManagerReconcileQuota_UnchangedCases(t *testing.T) {
 // scheduler pick path that an observation-blocked auth is skipped while another
 // auth is picked, and that a releasing observation makes it pickable at once.
 func TestManagerReconcileQuota_RoutingExcludesBlockedAuth(t *testing.T) {
+	// A custom selector is not built in, which sends pickNext down the legacy
+	// path used when plugin schedulers or custom selection are active.
+	type routingCase struct {
+		provider string
+		selector Selector
+	}
+	var cases []routingCase
 	for _, provider := range []string{"opencode-go", "codex"} {
-		t.Run(provider, func(t *testing.T) {
+		cases = append(cases,
+			routingCase{provider + "/scheduler", &FillFirstSelector{}},
+			routingCase{provider + "/legacy", customFillFirstSelector{&FillFirstSelector{}}},
+		)
+	}
+	for _, tc := range cases {
+		provider := strings.Split(tc.provider, "/")[0]
+		t.Run(tc.provider, func(t *testing.T) {
 			ctx := context.Background()
-			manager := NewManager(nil, &FillFirstSelector{}, nil)
+			manager := NewManager(nil, tc.selector, nil)
 			manager.RegisterExecutor(schedulerProviderTestExecutor{provider: provider})
-			model := "reconcile-routing-" + provider
-			first := &Auth{ID: "routing-" + provider + "-a", Provider: provider}
-			second := &Auth{ID: "routing-" + provider + "-b", Provider: provider}
+			model := "reconcile-routing-" + tc.provider
+			first := &Auth{ID: "routing-" + tc.provider + "-a", Provider: provider}
+			second := &Auth{ID: "routing-" + tc.provider + "-b", Provider: provider}
 			for _, a := range []*Auth{first, second} {
 				if _, errRegister := manager.Register(ctx, a); errRegister != nil {
 					t.Fatalf("register auth: %v", errRegister)
@@ -336,5 +355,46 @@ func TestManagerReconcileQuota_RoutingExcludesBlockedAuth(t *testing.T) {
 				t.Fatalf("released auth not picked: got %s, want %s", got, first.ID)
 			}
 		})
+	}
+}
+
+// TestManagerReconcileQuota_OverridesRealRateLimitBlock seeds the block through
+// the real 429 path, then proves a shorter observed reset wins for the auth and
+// leaves no stale longer model deadline once the observed reset has passed.
+func TestManagerReconcileQuota_OverridesRealRateLimitBlock(t *testing.T) {
+	ctx := context.Background()
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.RegisterExecutor(schedulerProviderTestExecutor{provider: "codex"})
+	const model = "reconcile-429-model"
+	auth := &Auth{ID: "reconcile-429-auth", Provider: "codex"}
+	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	registerSchedulerModels(t, "codex", model, auth.ID)
+	retryAfter := 10 * time.Hour
+	manager.MarkResult(ctx, Result{
+		AuthID: auth.ID, Provider: "codex", Model: model, Success: false, CredentialScope: true,
+		RetryAfter: &retryAfter,
+		Error:      &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exceeded"},
+	})
+	before, _ := manager.GetByID(auth.ID)
+	if blocked, _, _ := isAuthBlockedForModel(before, model, time.Now()); !blocked {
+		t.Fatalf("429 did not block the auth: %+v", before)
+	}
+
+	resetAt := time.Now().Add(time.Hour).Round(0)
+	result, _, errReconcile := manager.ReconcileQuota(ctx, auth.ID, []QuotaWindow{{Name: "5h", RemainingFraction: frac(0), ResetAt: resetAt}})
+	if errReconcile != nil || result != QuotaObservationBlocked {
+		t.Fatalf("ReconcileQuota() = %s, %v", result, errReconcile)
+	}
+	current, _ := manager.GetByID(auth.ID)
+	if !current.Quota.NextRecoverAt.Equal(resetAt) || !current.NextRetryAfter.Equal(resetAt) {
+		t.Fatalf("auth recovery = %v / %v, want %v", current.Quota.NextRecoverAt, current.NextRetryAfter, resetAt)
+	}
+	if blocked, _, _ := isAuthBlockedForModel(current, model, resetAt.Add(-time.Minute)); !blocked {
+		t.Fatal("auth must stay blocked until the observed reset")
+	}
+	if blocked, _, next := isAuthBlockedForModel(current, model, resetAt.Add(time.Second)); blocked {
+		t.Fatalf("stale longer model deadline survives the observed reset: next=%v state=%+v", next, current.ModelStates[model])
 	}
 }

@@ -108,10 +108,18 @@ from the old tag, so `custom` keeps moving forward.
 - `docs/superpowers/` specs and plans stay uncommitted; do not bundle them
   into patch commits.
 
-State at 2026-11-05: `custom` = `09c8d426` (upstream v8.0.55 + P1-P3 + local
-pluginhost/memory work), tagged `deploy/v8.0.55-1`, live on LXC 115. Upstream
-has since released v8.0.56 (`main` already mirrors it); `custom` has not been
-synced to it yet.
+State at 2026-11-05: `custom` = upstream v8.0.56 merged (`687e9395`) on top of
+`09c8d426` (upstream v8.0.55 + P1-P3 + local pluginhost/memory work). The live
+build on LXC 115 is still `09c8d426` (`deploy/v8.0.55-1`); v8.0.56 is merged,
+built and tested but **not deployed**. P1-P3 verified unaffected by the sync
+(no conflicts; upstream still lists `gpt-6.1-terra` in its catalog, so P2 stays).
+
+Known upstream failure (not ours, reproduces at the bare `v8.0.56` tag):
+`go test ./internal/util` -> `TestInPlaceByteWritesAreReviewed` flags
+`copy(buf[envelopeHeaderSize:], value)` in `internal/kvstore/bolt_store.go` as an
+unreviewed in-place write. Everything else in `go test ./...` passes. Also,
+`gofmt -l` flags two upstream test files (`claude_thinking_replay_test.go`,
+`codex_stream_bootstrap_buffering_test.go`); leave them to avoid merge noise.
 
 ## Patch inventory
 

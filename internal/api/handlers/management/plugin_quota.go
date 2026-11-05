@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -108,6 +109,7 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 				c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
 				return
 			}
+			h.reconcileQuotaCooldown(c.Request.Context(), auth, quotaResp)
 			c.JSON(http.StatusOK, quotaResp)
 			return
 		}
@@ -123,6 +125,7 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 						c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("quota probe failed: %v", errProbe)})
 						return
 					}
+					h.reconcileQuotaCooldown(c.Request.Context(), auth, quotaResp)
 					c.JSON(http.StatusOK, quotaResp)
 					return
 				}
@@ -296,7 +299,47 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
 		return
 	}
+	h.reconcileQuotaCooldown(c.Request.Context(), auth, quotaResp)
 	c.JSON(http.StatusOK, quotaResp)
+}
+
+// reconcileQuotaCooldown aligns the auth's routing quota cooldown with a
+// successful fresh quota fetch. Failures are logged and never fail the fetch.
+func (h *Handler) reconcileQuotaCooldown(ctx context.Context, auth *coreauth.Auth, quotaResp pluginapi.QuotaFetchResponse) {
+	if h.authManager == nil || auth == nil {
+		return
+	}
+	fresh, ok := quotaReconcileFromResponse(quotaResp)
+	if !ok {
+		return
+	}
+	if _, _, errReconcile := h.authManager.ReconcileQuota(ctx, auth.ID, fresh); errReconcile != nil {
+		log.WithError(errReconcile).Warnf("failed to reconcile quota cooldown for credential %s", auth.Index)
+	}
+}
+
+// quotaReconcileFromResponse summarizes bucket data: any bucket with remaining
+// capacity means available; otherwise the earliest parseable reset time is
+// reported. It returns false when the response carries no bucket data.
+func quotaReconcileFromResponse(quotaResp pluginapi.QuotaFetchResponse) (coreauth.QuotaReconcile, bool) {
+	var fresh coreauth.QuotaReconcile
+	buckets := 0
+	for _, group := range quotaResp.Groups {
+		for _, bucket := range group.Buckets {
+			buckets++
+			if bucket.RemainingFraction > 0 {
+				fresh.Available = true
+			}
+			resetAt, errParse := time.Parse(time.RFC3339, strings.TrimSpace(bucket.ResetTime))
+			if errParse == nil && (fresh.ResetAt.IsZero() || resetAt.Before(fresh.ResetAt)) {
+				fresh.ResetAt = resetAt
+			}
+		}
+	}
+	if fresh.Available {
+		fresh.ResetAt = time.Time{}
+	}
+	return fresh, buckets > 0
 }
 
 // ResetPluginQuota handles DELETE /v0/management/plugins/:id/quota and POST /v0/management/plugins/:id/quota/reset

@@ -1300,3 +1300,123 @@ func TestFetchCredentialQuota_MissingTokenDoesNotHitUpstream(t *testing.T) {
 		t.Fatal("upstream server must NOT be contacted when template requires token but token is missing")
 	}
 }
+
+func reconcileFetchHandler(t *testing.T, auth *coreauth.Auth, buckets []pluginapi.QuotaBucket) (*coreauth.Manager, *Handler, string) {
+	t.Helper()
+	manager := coreauth.NewManager(nil, nil, nil)
+	authIndex := auth.EnsureIndex()
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("failed to register auth: %v", errRegister)
+	}
+	host := pluginhost.New()
+	host.RegisterPluginForTest("reconcile-plugin", pluginapi.Plugin{
+		Metadata: pluginapi.Metadata{Name: "Reconcile Plugin"},
+		Capabilities: pluginapi.Capabilities{
+			QuotaProvider: &mockQuotaProvider{
+				identifier: auth.Provider,
+				fetchFn: func(context.Context, pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
+					return pluginapi.QuotaFetchResponse{Groups: []pluginapi.QuotaGroup{{DisplayName: "Limits", Buckets: buckets}}}, nil
+				},
+			},
+		},
+	})
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	h.SetPluginHost(host)
+	return manager, h, authIndex
+}
+
+func fetchQuotaForTest(t *testing.T, h *Handler, authIndex string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/fetch", strings.NewReader(`{"auth_index":"`+authIndex+`"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.FetchCredentialQuota(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func credentialQuotaBlockedAuth(id string, recoverAt time.Time) *coreauth.Auth {
+	return &coreauth.Auth{
+		ID:             id,
+		FileName:       id + ".json",
+		Provider:       id + "-provider",
+		Status:         coreauth.StatusError,
+		StatusMessage:  "quota exhausted",
+		Unavailable:    true,
+		NextRetryAfter: recoverAt,
+		Quota:          coreauth.QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: recoverAt},
+	}
+}
+
+func TestFetchCredentialQuota_AvailableReleasesCredentialQuotaBlock(t *testing.T) {
+	recoverAt := time.Now().Add(4 * time.Hour)
+	manager, h, authIndex := reconcileFetchHandler(t, credentialQuotaBlockedAuth("reconcile-available", recoverAt), []pluginapi.QuotaBucket{
+		{Window: "5h", RemainingFraction: 0.8, ResetTime: recoverAt.UTC().Format(time.RFC3339)},
+	})
+
+	fetchQuotaForTest(t, h, authIndex)
+
+	record, ok := manager.GetByID("reconcile-available")
+	if !ok {
+		t.Fatal("auth missing")
+	}
+	if record.Quota.Exceeded || !record.Quota.NextRecoverAt.IsZero() || record.Unavailable || !record.NextRetryAfter.IsZero() || record.Status != coreauth.StatusActive {
+		t.Fatalf("expected quota block released, got status=%v unavailable=%v next=%v quota=%+v", record.Status, record.Unavailable, record.NextRetryAfter, record.Quota)
+	}
+}
+
+func TestFetchCredentialQuota_ExhaustedEarlierResetMovesRecovery(t *testing.T) {
+	recoverAt := time.Now().Add(6 * time.Hour).Round(0)
+	earlier := time.Now().Add(time.Hour).Truncate(time.Second)
+	manager, h, authIndex := reconcileFetchHandler(t, credentialQuotaBlockedAuth("reconcile-earlier", recoverAt), []pluginapi.QuotaBucket{
+		{Window: "weekly", RemainingFraction: 0, ResetTime: recoverAt.UTC().Format(time.RFC3339)},
+		{Window: "5h", RemainingFraction: 0, ResetTime: earlier.UTC().Format(time.RFC3339)},
+	})
+
+	fetchQuotaForTest(t, h, authIndex)
+
+	record, _ := manager.GetByID("reconcile-earlier")
+	if !record.Quota.Exceeded || !record.Quota.NextRecoverAt.Equal(earlier) || !record.NextRetryAfter.Equal(earlier) {
+		t.Fatalf("expected recovery moved to %v, got next=%v quota=%+v", earlier, record.NextRetryAfter, record.Quota)
+	}
+}
+
+func TestFetchCredentialQuota_ExhaustedLaterResetKeepsRecovery(t *testing.T) {
+	recoverAt := time.Now().Add(time.Hour).Round(0)
+	manager, h, authIndex := reconcileFetchHandler(t, credentialQuotaBlockedAuth("reconcile-later", recoverAt), []pluginapi.QuotaBucket{
+		{Window: "5h", RemainingFraction: 0, ResetTime: recoverAt.Add(3 * time.Hour).UTC().Format(time.RFC3339)},
+	})
+
+	fetchQuotaForTest(t, h, authIndex)
+
+	record, _ := manager.GetByID("reconcile-later")
+	if !record.Quota.NextRecoverAt.Equal(recoverAt) || !record.NextRetryAfter.Equal(recoverAt) {
+		t.Fatalf("recovery must not be extended, got next=%v quota=%+v", record.NextRetryAfter, record.Quota)
+	}
+}
+
+func TestFetchCredentialQuota_NoQuotaBlockLeavesRoutingStateUntouched(t *testing.T) {
+	retryAt := time.Now().Add(time.Hour).Round(0)
+	auth := &coreauth.Auth{
+		ID:             "reconcile-transient",
+		FileName:       "reconcile-transient.json",
+		Provider:       "reconcile-transient-provider",
+		Status:         coreauth.StatusError,
+		StatusMessage:  "transient upstream error",
+		Unavailable:    true,
+		NextRetryAfter: retryAt,
+	}
+	manager, h, authIndex := reconcileFetchHandler(t, auth, []pluginapi.QuotaBucket{
+		{Window: "5h", RemainingFraction: 0.9, ResetTime: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+	})
+	before, _ := manager.GetByID("reconcile-transient")
+
+	fetchQuotaForTest(t, h, authIndex)
+
+	after, _ := manager.GetByID("reconcile-transient")
+	if after.Generation != before.Generation || !after.Unavailable || after.Status != coreauth.StatusError || !after.NextRetryAfter.Equal(retryAt) {
+		t.Fatalf("routing state changed: before=%+v after=%+v", before, after)
+	}
+}

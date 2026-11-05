@@ -6,6 +6,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // QuotaWindow is one normalized quota window of a fresh quota observation.
@@ -26,6 +28,23 @@ const (
 	QuotaObservationUnchanged QuotaObservationResult = "unchanged"
 )
 
+// classifyQuotaWindow reports whether a window carries a usable reading and
+// whether it is exhausted: remaining <= 0 and not already reset. It is the single
+// definition used by the routing decision and by the observation log.
+func classifyQuotaWindow(window QuotaWindow, now time.Time) (known, exhausted bool) {
+	fraction := window.RemainingFraction
+	if fraction == nil || math.IsNaN(*fraction) {
+		return false, false
+	}
+	if *fraction > 0 {
+		return true, false
+	}
+	if !window.ResetAt.IsZero() && !window.ResetAt.After(now) {
+		return true, false
+	}
+	return true, true
+}
+
 // EvaluateQuotaWindows applies the quota observation semantics to a set of
 // windows. A window is exhausted when its remaining fraction is <= 0 and it
 // has not already reset. Any exhausted window blocks the credential until the
@@ -37,15 +56,12 @@ func EvaluateQuotaWindows(windows []QuotaWindow, now time.Time) (QuotaObservatio
 	exhausted := false
 	var recoverAt time.Time
 	for _, window := range windows {
-		fraction := window.RemainingFraction
-		if fraction == nil || math.IsNaN(*fraction) {
+		windowKnown, windowExhausted := classifyQuotaWindow(window, now)
+		if !windowKnown {
 			continue
 		}
 		known = true
-		if *fraction > 0 {
-			continue
-		}
-		if !window.ResetAt.IsZero() && !window.ResetAt.After(now) {
+		if !windowExhausted {
 			continue
 		}
 		exhausted = true
@@ -70,6 +86,14 @@ func EvaluateQuotaWindows(windows []QuotaWindow, now time.Time) (QuotaObservatio
 // releases an active quota block when none is, and otherwise changes nothing.
 // The returned time is the recovery time when the result is blocked.
 func (m *Manager) ReconcileQuota(ctx context.Context, authID string, windows []QuotaWindow) (QuotaObservationResult, time.Time, error) {
+	result, recoverAt, err := m.reconcileQuota(ctx, authID, windows)
+	if err == nil && m != nil {
+		logQuotaObservation(strings.TrimSpace(authID), windows, result, recoverAt, time.Now())
+	}
+	return result, recoverAt, err
+}
+
+func (m *Manager) reconcileQuota(ctx context.Context, authID string, windows []QuotaWindow) (QuotaObservationResult, time.Time, error) {
 	if m == nil {
 		return QuotaObservationUnchanged, time.Time{}, nil
 	}
@@ -180,4 +204,64 @@ func (m *Manager) blockCredentialQuota(ctx context.Context, authID string, recov
 		return QuotaObservationUnchanged, time.Time{}, errPersist
 	}
 	return QuotaObservationBlocked, recoverAt, nil
+}
+
+// logQuotaObservation records what a quota observation did, so an operator can
+// see from the log alone why a credential was blocked, released or left alone
+// after a quota refresh. It carries only window names, fractions and reset times.
+func logQuotaObservation(authID string, windows []QuotaWindow, result QuotaObservationResult, recoverAt time.Time, now time.Time) {
+	knownCount := 0
+	var exhausted []string
+	parts := make([]string, 0, len(windows))
+	for _, window := range windows {
+		known, isExhausted := classifyQuotaWindow(window, now)
+		if known {
+			knownCount++
+		}
+		if isExhausted {
+			exhausted = append(exhausted, window.Name)
+		}
+		remaining := "?"
+		if window.RemainingFraction != nil && !math.IsNaN(*window.RemainingFraction) {
+			remaining = fmt.Sprintf("%.2f", *window.RemainingFraction)
+		}
+		reset := "-"
+		if !window.ResetAt.IsZero() {
+			reset = window.ResetAt.UTC().Format(time.RFC3339)
+		}
+		parts = append(parts, window.Name+"="+remaining+"@"+reset)
+	}
+
+	reason := ""
+	switch result {
+	case QuotaObservationBlocked:
+		reason = "exhausted window with a future reset"
+	case QuotaObservationReleased:
+		reason = "capacity available; active quota block released"
+	default:
+		switch {
+		case knownCount == 0:
+			reason = "no readings"
+		case len(exhausted) > 0:
+			reason = "exhausted without a usable reset time"
+		default:
+			reason = "capacity available; no quota block to release"
+		}
+	}
+	recover := "-"
+	if !recoverAt.IsZero() {
+		recover = recoverAt.UTC().Format(time.RFC3339)
+	}
+	exhaustedText := "-"
+	if len(exhausted) > 0 {
+		exhaustedText = strings.Join(exhausted, ",")
+	}
+	log.WithFields(log.Fields{
+		"auth_id":    authID,
+		"result":     string(result),
+		"reason":     reason,
+		"recover_at": recover,
+		"exhausted":  exhaustedText,
+		"windows":    strings.Join(parts, ","),
+	}).Info("quota observation")
 }

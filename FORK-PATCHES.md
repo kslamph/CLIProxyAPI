@@ -235,6 +235,11 @@ sending upstream (then drop the local copy after it lands).
   false = informational, shown in the UI but ignored for routing; decoder accepts
   `gates_routing`): z.ai's `monthly-tools` window must not take a credential out
   of rotation. 429 handling is untouched and stays independent.
+  Every observation writes one info line `quota observation` (`auth_id`, `result`
+  = blocked|released|unchanged, `reason`, `recover_at`, `exhausted` window names,
+  `windows` = `name=remaining@reset,...`) from `Manager.ReconcileQuota`, so the
+  outcome of a UI refresh is visible in the log; nothing is logged when the
+  reconcile itself fails (the callers already warn).
 - Files: `sdk/cliproxy/auth/conductor_quota_reconcile.go` (+test),
   `sdk/cliproxy/auth/conductor_cooldown.go` (ResetQuota tail extracted into
   `publishQuotaChange`), `internal/api/handlers/management/plugin_quota.go`
@@ -247,7 +252,8 @@ sending upstream (then drop the local copy after it lands).
 - Verify: `go test ./sdk/pluginapi/ ./sdk/cliproxy/auth/ ./internal/api/...`
   - the rule that most needs guarding is `recover_at` = latest reset among
   EXHAUSTED windows only: `TestEvaluateQuotaWindows` (examples 1-3); routing proof
-  `TestManagerReconcileQuota_RoutingExcludesBlockedAuth`; gating
+  `TestManagerReconcileQuota_RoutingExcludesBlockedAuth`; the log line
+  `TestReconcileQuotaLogsObservationOutcome`; gating
   `TestFetchCredentialQuota_NonGating*`.
 - Siblings that must stay in step: CPAM P3 (reports codex/claude windows to the
   endpoint and its manager-server proxy exact-path route) and zai-provider v0.1.3

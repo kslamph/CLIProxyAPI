@@ -13,24 +13,105 @@ Sibling forks that must stay compatible with this one:
 | CPAM (CPA-Manager-Plus) | `~/goproj/CPA-Manager-Plus` | `FORK-PATCHES.md` in that repo |
 | opencode-go plugin | `~/goproj/opencode-go-cliproxyapi` | `FORK-PATCHES.md` in that repo |
 
-Live deployment record: `~/devops/docs/providers/tyooc2-cpa.md` and the dated
-jobs under `~/devops/docs/jobs/`.
+Live deployment record: **production since 2026-11-03 is Proxmox LXC 115
+(`cpa-lxc`)** — durable record `~/devops/docs/providers/cpa-lxc.md`, jobs under
+`~/devops/docs/jobs/`. tyooc2 is retired as the rollback host
+(`~/devops/docs/providers/tyooc2-cpa.md`); do not deploy or configure it as if
+it were live.
 
-## Remotes and branch stack
+## Branch model and protocol (development -> deployment)
 
-- `origin` = upstream (`router-for-me/CLIProxyAPI`), `kslamph` = our fork.
-- Upstream is merged by tag (`git merge vX.Y.Z`), never rebased, into local `main`.
-- Patches are stacked as branches, each on top of the previous one:
+This fork wants upstream updates and keeps its own patches until upstream
+implements them, so (unlike the plugin repos, where `main` is the working and
+deploy branch) `main` here is **not** ours.
 
-```
-main (upstream tag merges + P1 merged in)
-  └─ fix/codex-free-unsupported-models   (+P2)
-       └─ fix/plugin-owned-auth-id       (+P3)   <- deployed branch
-```
+| Ref | Role | Rules |
+|---|---|---|
+| `origin/main` | upstream | read-only, never push |
+| `main` | exact mirror of `origin/main` | fast-forward only (`git branch -f main origin/main`); never commit, never merge into it. `git log main..custom` must list exactly our patches |
+| `custom` | **the working and deployment branch** = upstream + our patches | every deploy is built from a commit on it; keep it releasable |
+| `feat/<topic>`, `fix/<topic>` | short-lived work | branch from `custom` in their own worktree; merge back, then delete |
+| `sync/vX.Y.Z` | short-lived upstream sync | branch from `custom`, merges the upstream tag; fast-forwarded into `custom` once green |
+| tag `deploy/vX.Y.Z-N` | what is live | annotated tag on the deployed commit, `N` counts redeploys of the same upstream version |
 
-`main` is NOT pushed to `kslamph` regularly; check `git branch -vv` before
-assuming the fork on GitHub has the current state. Nothing from P2/P3 had been
-pushed when this file was written (2026-11-01).
+Remotes: `origin` = upstream (`router-for-me/CLIProxyAPI`), `kslamph` = our fork.
+Push `custom` and the `deploy/*` tags to `kslamph` after a deploy; never push `main`
+or anything else to `origin`.
+
+Worktrees: `custom` is checked out in exactly one worktree (currently
+`~/orca/workspaces/CLIProxyAPI/v8.0.55-full-integration`; the directory name is
+historical). `~/goproj/CLIProxyAPI` stays on `main` as the upstream mirror. Make
+every other worktree from `custom` through Orca (`orca worktree create`,
+`orca worktree rm`), and remove it when its branch is merged. Do not leave
+long-lived `scratch/*` branches.
+
+### 1. Develop a change
+
+1. `orca worktree create` (or `git worktree add -b feat/<topic> <dir> custom`).
+2. Keep the change small; follow `AGENTS.md` (ojson/base64 rules, executor
+   layout, `gofmt -w .`).
+3. Add or update its entry in **Patch inventory** below in the same commit:
+   commit, what, files, conflict hotspots, Verify command, **Drop when**. A
+   patch with no "Drop when" is not allowed.
+4. Run the entry's Verify command, then the full gate:
+   `gofmt -l .`, `go build -o /tmp/cpa-check ./cmd/server`,
+   `go test ./...`.
+5. Merge into `custom` (`git merge --no-ff feat/<topic>` from the `custom`
+   worktree, or fast-forward when it is a single commit), then remove the
+   worktree and branch.
+
+### 2. Sync upstream (do this per upstream tag, not per commit)
+
+1. `git fetch origin --tags`, then `git -C ~/goproj/CLIProxyAPI merge --ff-only origin/main`
+   (that worktree is the one that has `main` checked out).
+2. New worktree + branch `sync/vX.Y.Z` from `custom`.
+3. In it: `git merge vX.Y.Z` (merge, not rebase, because `custom` is deployed
+   and pushed). Resolve with the hotspot notes in **Patch inventory**; never take
+   "theirs" wholesale on files a patch lists.
+4. Check each patch's **Drop when** condition: run its Verify command against
+   upstream's code (e.g. in a throwaway worktree at the upstream tag). If upstream
+   now provides it, delete the patch and its inventory entry in the same commit.
+5. Full gate (see 1.4) plus sibling compatibility: CPAM still proxies GET/PUT
+   `/v8/management/config/access`; plugin ABI (`sdk/pluginapi`,
+   `AuthParseRequest`/`AuthData`) unchanged, else rebuild the plugins against the
+   new SDK (see the plugin repos' docs).
+6. `git -C <custom worktree> merge --ff-only sync/vX.Y.Z`, delete the sync
+   worktree and branch.
+
+### 3. Release and deploy
+
+1. From a **clean** `custom` worktree (the commit stamped into the binary must
+   exist on `custom`): build per **Release build** below.
+2. Read `~/devops/docs/README.md` first and follow `~/devops/docs/providers/cpa-lxc.md`
+   (production is LXC 115; never infer the target from this repo's docs alone).
+3. Deploy and run the post-deploy checks (see **Deploy and post-deploy checks**).
+4. Only after the checks pass:
+   `GIT_EDITOR=true git tag -a deploy/vX.Y.Z-N -m "<host> <date>: <summary>" <commit>`;
+   `git push kslamph custom deploy/vX.Y.Z-N`.
+5. Update this file (History row, base tag, dropped/changed patches), commit it
+   on `custom`, and add the dated job log under `~/devops/docs/jobs/`.
+
+### 4. Roll back
+
+Redeploy the previous `deploy/*` tag's binary using the host's own rollback
+directory/snapshot (see the cpa-lxc host record; the guest has no other backup).
+If the bad deploy needs a code fix, branch `fix/<topic>` from `custom`, never
+from the old tag, so `custom` keeps moving forward.
+
+### Branch hygiene
+
+- Before deleting a branch: `git merge-base --is-ancestor <branch> custom`, or
+  `git cherry custom <branch>` shows only `-` lines.
+- Every commit stamped into a deployed binary is reachable from `custom`; this
+  is what makes `main.Commit` meaningful.
+- Dirty trees are never deployed (the 2026-10-31 deploy was a mistake of this kind).
+- `docs/superpowers/` specs and plans stay uncommitted; do not bundle them
+  into patch commits.
+
+State at 2026-11-05: `custom` = `09c8d426` (upstream v8.0.55 + P1-P3 + local
+pluginhost/memory work), tagged `deploy/v8.0.55-1`, live on LXC 115. Upstream
+has since released v8.0.56 (`main` already mirrors it); `custom` has not been
+synced to it yet.
 
 ## Patch inventory
 
@@ -38,7 +119,7 @@ Status key: `local-only` = not in upstream, must be carried; `candidate` = worth
 sending upstream (then drop the local copy after it lands).
 
 ### P1 - per-API-key model restriction (`local-only`)
-- Commit: `2022ade1` (also branch `claude/per-key-model-restriction-5fnut2`).
+- Commit: `2022ade1` (formerly branch `claude/per-key-model-restriction-5fnut2`, deleted after being merged into `custom`).
 - What: new config `access.api-key-model-access` (client API key ->
   `allowed-models` / `denied-models`, case-insensitive `*`/`?`, deny wins). The
   config-api-key provider attaches a `ModelPolicy` to the auth result; policy
@@ -120,21 +201,9 @@ binary). The live server uses `CLIProxyAPI` as the binary name; local dev uses
 
 ## Upstream sync procedure
 
-1. `git fetch origin --tags`; `git checkout main`; `git merge vX.Y.Z`. Resolve
-   conflicts using the hotspot notes above. Never take "theirs" wholesale on
-   files listed in a patch.
-2. Re-merge the patch branches in order (or rebase the stack onto new `main`):
-   P2 branch, then P3 branch.
-3. For each patch run its Verify command. If a patch's "Drop when" condition is
-   met, remove the patch and update this file in the same commit.
-4. `gofmt -l .`, `go build ./...`, `go test ./internal/api/handlers/management ./sdk/... ./internal/registry ./internal/access/... ./internal/config/...`.
-5. Check sibling compatibility: CPAM still proxies GET/PUT
-   `/v8/management/config/access` (CPAM P1) and the plugin ABI
-   (`sdk/pluginapi`, `AuthParseRequest`/`AuthData`) did not change shape. If the
-   plugin ABI changed, rebuild the plugin against the new SDK (see plugin doc).
-6. Release build (CGO is mandatory, see below), deploy, post-deploy checks.
-7. Update this file: new base tag, any dropped/changed patch, and the deployed
-   commit. Also add a dated job log in `~/devops/docs/jobs/`.
+See **Branch model and protocol**, section 2. Minimum Verify set after a sync:
+`go test ./internal/api/handlers/management ./sdk/... ./internal/registry ./internal/access/... ./internal/config/...`
+plus each patch's own Verify command.
 
 ## Release build
 
@@ -152,21 +221,28 @@ file CLIProxyAPI   # must say "dynamically linked"
   The fork is identified by `main.Commit`, which must be a commit on the
   deployed branch.
 
-## Deploy (tyooc2) and post-deploy checks
+## Deploy and post-deploy checks
 
-- Host `ubuntu@tyooc2.c2ph.com`; binary `/home/ubuntu/goproj/CLIProxyAPI/CLIProxyAPI`;
-  user units `cliproxyapi.service`, then `cpa-manager.service`.
-- Stage -> `sha256sum -c` -> back up old binary + `config.yaml` to
-  `/home/ubuntu/deploy-backup-<UTC>-<tag>/` -> atomic `mv` -> restart CPA, wait
-  for `:8143`, then restart the manager (otherwise its collector can fall back
-  from `subscribe` to polling).
-- Preserve `plugins/linux/amd64/` on the VPS across binary swaps.
+- **Production host: Proxmox LXC 115 `cpa-lxc`** — `ssh -J cloudai root@10.10.60.12`.
+  Layout under `/home/cpa/` mirrors the old one (`goproj/CLIProxyAPI/`,
+  `goproj/CPA-Manager-Plus/.dev-data/`, auth dir `/home/cpa/.cli-proxy-api`).
+  Services are **system** units: `cliproxyapi.service`, `cpa-manager.service`
+  (waits for :8143), `cloudflared-cpa-lxc.service`, `disk-guard.timer`.
+  **Write `config.yaml` in place** (`cat new > config.yaml`); `sed -i` swaps the
+  inode and permanently breaks the config watcher on that guest.
+- tyooc2 is hard-decommissioned (2026-11-05); do not deploy to it.
+- Stage -> `sha256sum -c` -> back up old binary + `config.yaml` to a
+  timestamped `deploy-backup-<UTC>-<tag>/` directory on the host -> atomic `mv`
+  -> restart CPA, wait for `:8143`, then restart the manager (otherwise its
+  collector can fall back from `subscribe` to polling).
+- Preserve `plugins/linux/amd64/` on the host across binary swaps.
 - Checks: remote `CLIProxyAPI -h` shows the new commit; any management response
   carries `X-Cpa-Support-Plugin: 1`; journal shows no new `error`; collector
   `transport` is `subscribe`; unauthenticated `/v1/models` = 401;
   `GET /v0/management/auth-files` lists each plugin-owned file exactly once
   (for P3: one `opencode-go-key-*` entry per `opencode-go` file).
-- Rollback: copy the backed-up binary back and restart both units.
+- Rollback: copy the backed-up binary back and restart both units (see
+  section 4 of the branch protocol).
 
 ## History
 
@@ -175,4 +251,7 @@ file CLIProxyAPI   # must say "dynamically linked"
 | 2026-10-22 | v8.0.38 | `0db19025` | first VPS deploy (static build, later found wrong) |
 | 2026-10-31 | v8.0.48 | `909b88f3` + dirty tree | P1 merged; CGO rebuild incl. P2 before it was committed |
 | 2026-11-01 | v8.0.48 | `cf7f0f92` | P1 + P2 + P3; fixes duplicate opencode-go profile after saving excluded models |
-| 2026-11-04 | v8.0.53 | `605d9ed5` | Upstream v8.0.53 merge; moego port; slug/name detail selection; multi-auth & virtual-source reconciliation |
+| 2026-11-04 | v8.0.53 | `605d9ed5` | Upstream v8.0.53 merged into local main (moego port, slug/name detail selection, multi-auth & virtual-source reconciliation). **Never deployed to tyooc2** — it kept running v8.0.48 |
+| 2026-11-03 | — | cutover | **Production moved from tyooc2 to LXC 115 `cpa-lxc`** (tunnel `cpa-lxc-test` → `cpa.c2ph.com`/`cpam.c2ph.com`); tyooc2 retired as rollback |
+| 2026-11-04 | v8.0.53 | `1f4aa8b9`-dirty | On **LXC 115** (observed by the 2026-11-05 deploy job) |
+| 2026-11-05 | v8.0.55-custom | `09c8d426` | On **LXC 115**: `scratch/v8.0.55-full-integration`; plugins opencode-go v0.2.2 + zai v0.1.2. Same day: streaming keepalive 20→80s, request-log temporarily on for a capture |

@@ -1367,33 +1367,114 @@ func TestFetchCredentialQuota_AvailableReleasesCredentialQuotaBlock(t *testing.T
 	}
 }
 
-func TestFetchCredentialQuota_ExhaustedEarlierResetMovesRecovery(t *testing.T) {
-	recoverAt := time.Now().Add(6 * time.Hour).Round(0)
-	earlier := time.Now().Add(time.Hour).Truncate(time.Second)
-	manager, h, authIndex := reconcileFetchHandler(t, credentialQuotaBlockedAuth("reconcile-earlier", recoverAt), []pluginapi.QuotaBucket{
-		{Window: "weekly", RemainingFraction: 0, ResetTime: recoverAt.UTC().Format(time.RFC3339)},
-		{Window: "5h", RemainingFraction: 0, ResetTime: earlier.UTC().Format(time.RFC3339)},
+func TestFetchCredentialQuota_ExhaustedWithoutPriorBlockSetsBlockFromExhaustedWindowsOnly(t *testing.T) {
+	fiveHour := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	weekly := time.Now().Add(72 * time.Hour).Truncate(time.Second)
+	auth := &coreauth.Auth{ID: "reconcile-set", FileName: "reconcile-set.json", Provider: "reconcile-set-provider"}
+	manager, h, authIndex := reconcileFetchHandler(t, auth, []pluginapi.QuotaBucket{
+		{Window: "5h", RemainingFraction: 0, ResetTime: fiveHour.UTC().Format(time.RFC3339)},
+		{Window: "weekly", RemainingFraction: 0.4, ResetTime: weekly.UTC().Format(time.RFC3339)},
 	})
 
 	fetchQuotaForTest(t, h, authIndex)
 
-	record, _ := manager.GetByID("reconcile-earlier")
-	if !record.Quota.Exceeded || !record.Quota.NextRecoverAt.Equal(earlier) || !record.NextRetryAfter.Equal(earlier) {
-		t.Fatalf("expected recovery moved to %v, got next=%v quota=%+v", earlier, record.NextRetryAfter, record.Quota)
+	record, _ := manager.GetByID("reconcile-set")
+	if !record.Quota.Exceeded || record.Quota.Reason != "credential_quota" ||
+		!record.Quota.NextRecoverAt.Equal(fiveHour) || !record.NextRetryAfter.Equal(fiveHour) {
+		t.Fatalf("expected block until %v, got next=%v quota=%+v", fiveHour, record.NextRetryAfter, record.Quota)
 	}
 }
 
-func TestFetchCredentialQuota_ExhaustedLaterResetKeepsRecovery(t *testing.T) {
-	recoverAt := time.Now().Add(time.Hour).Round(0)
-	manager, h, authIndex := reconcileFetchHandler(t, credentialQuotaBlockedAuth("reconcile-later", recoverAt), []pluginapi.QuotaBucket{
-		{Window: "5h", RemainingFraction: 0, ResetTime: recoverAt.Add(3 * time.Hour).UTC().Format(time.RFC3339)},
+func TestFetchCredentialQuota_ExhaustedOverridesLongerExistingBlock(t *testing.T) {
+	recoverAt := time.Now().Add(10 * time.Hour).Round(0)
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	manager, h, authIndex := reconcileFetchHandler(t, credentialQuotaBlockedAuth("reconcile-longer", recoverAt), []pluginapi.QuotaBucket{
+		{Window: "5h", RemainingFraction: 0, ResetTime: reset.UTC().Format(time.RFC3339)},
 	})
 
 	fetchQuotaForTest(t, h, authIndex)
 
-	record, _ := manager.GetByID("reconcile-later")
-	if !record.Quota.NextRecoverAt.Equal(recoverAt) || !record.NextRetryAfter.Equal(recoverAt) {
-		t.Fatalf("recovery must not be extended, got next=%v quota=%+v", record.NextRetryAfter, record.Quota)
+	record, _ := manager.GetByID("reconcile-longer")
+	if !record.Quota.NextRecoverAt.Equal(reset) || !record.NextRetryAfter.Equal(reset) {
+		t.Fatalf("expected block overridden to %v, got next=%v quota=%+v", reset, record.NextRetryAfter, record.Quota)
+	}
+}
+
+func observeQuotaForTest(t *testing.T, h *Handler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v8/management/routing/quota/observation", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.ObserveQuota(ctx)
+	return rec
+}
+
+func TestObserveQuota_Endpoint(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{ID: "observe-auth", FileName: "observe-auth.json", Provider: "codex"}
+	authIndex := auth.EnsureIndex()
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+
+	type response struct {
+		Result    string  `json:"result"`
+		RecoverAt *string `json:"recover_at"`
+	}
+	decode := func(rec *httptest.ResponseRecorder) response {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var out response
+		if errDecode := json.Unmarshal(rec.Body.Bytes(), &out); errDecode != nil {
+			t.Fatalf("decode: %v", errDecode)
+		}
+		return out
+	}
+
+	fiveHour := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	weekly := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Second)
+	body := `{"auth_index":"` + authIndex + `","windows":[` +
+		`{"name":"5h","remaining_fraction":0,"reset_at":"` + fiveHour.Format(time.RFC3339) + `"},` +
+		`{"name":"weekly","remaining_fraction":0.4,"reset_at":"` + weekly.Format(time.RFC3339) + `"}]}`
+	got := decode(observeQuotaForTest(t, h, body))
+	if got.Result != "blocked" || got.RecoverAt == nil || *got.RecoverAt != fiveHour.Format(time.RFC3339) {
+		t.Fatalf("blocked response = %+v, want recover_at %s", got, fiveHour.Format(time.RFC3339))
+	}
+	current, _ := manager.GetByID("observe-auth")
+	if !current.Quota.Exceeded || !current.Quota.NextRecoverAt.Equal(fiveHour) {
+		t.Fatalf("auth not blocked: %+v", current.Quota)
+	}
+
+	got = decode(observeQuotaForTest(t, h, `{"auth_index":"`+authIndex+`","windows":[{"name":"5h","remaining_fraction":0.7,"reset_at":null}]}`))
+	if got.Result != "released" || got.RecoverAt != nil {
+		t.Fatalf("released response = %+v", got)
+	}
+	current, _ = manager.GetByID("observe-auth")
+	if current.Quota.Exceeded || current.Unavailable {
+		t.Fatalf("auth not released: %+v", current)
+	}
+
+	got = decode(observeQuotaForTest(t, h, `{"auth_index":"`+authIndex+`","windows":[{"name":"5h","remaining_fraction":null,"reset_at":null}]}`))
+	if got.Result != "unchanged" || got.RecoverAt != nil {
+		t.Fatalf("unchanged response = %+v", got)
+	}
+
+	if rec := observeQuotaForTest(t, h, `{"auth_index":"missing","windows":[]}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown auth_index status = %d, want 404", rec.Code)
+	}
+	for name, bad := range map[string]string{
+		"malformed_json": `{"auth_index":`,
+		"missing_index":  `{"windows":[]}`,
+		"bad_reset_at":   `{"auth_index":"` + authIndex + `","windows":[{"name":"x","remaining_fraction":0,"reset_at":"tomorrow"}]}`,
+		"bad_fraction":   `{"auth_index":"` + authIndex + `","windows":[{"name":"x","remaining_fraction":"lots"}]}`,
+	} {
+		if rec := observeQuotaForTest(t, h, bad); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want 400", name, rec.Code)
+		}
 	}
 }
 

@@ -303,43 +303,31 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 	c.JSON(http.StatusOK, quotaResp)
 }
 
-// reconcileQuotaCooldown aligns the auth's routing quota cooldown with a
-// successful fresh quota fetch. Failures are logged and never fail the fetch.
+// reconcileQuotaCooldown applies a successful fresh quota fetch to the auth's
+// routing quota state. Failures are logged and never fail the fetch.
 func (h *Handler) reconcileQuotaCooldown(ctx context.Context, auth *coreauth.Auth, quotaResp pluginapi.QuotaFetchResponse) {
 	if h.authManager == nil || auth == nil {
 		return
 	}
-	fresh, ok := quotaReconcileFromResponse(quotaResp)
-	if !ok {
-		return
-	}
-	if _, _, errReconcile := h.authManager.ReconcileQuota(ctx, auth.ID, fresh); errReconcile != nil {
+	if _, _, errReconcile := h.authManager.ReconcileQuota(ctx, auth.ID, quotaWindowsFromResponse(quotaResp)); errReconcile != nil {
 		log.WithError(errReconcile).Warnf("failed to reconcile quota cooldown for credential %s", auth.Index)
 	}
 }
 
-// quotaReconcileFromResponse summarizes bucket data: any bucket with remaining
-// capacity means available; otherwise the earliest parseable reset time is
-// reported. It returns false when the response carries no bucket data.
-func quotaReconcileFromResponse(quotaResp pluginapi.QuotaFetchResponse) (coreauth.QuotaReconcile, bool) {
-	var fresh coreauth.QuotaReconcile
-	buckets := 0
+// quotaWindowsFromResponse maps every bucket of every group to a quota window.
+func quotaWindowsFromResponse(quotaResp pluginapi.QuotaFetchResponse) []coreauth.QuotaWindow {
+	var windows []coreauth.QuotaWindow
 	for _, group := range quotaResp.Groups {
 		for _, bucket := range group.Buckets {
-			buckets++
-			if bucket.RemainingFraction > 0 {
-				fresh.Available = true
+			remaining := bucket.RemainingFraction
+			window := coreauth.QuotaWindow{Name: bucket.Window, RemainingFraction: &remaining}
+			if resetAt, errParse := time.Parse(time.RFC3339, strings.TrimSpace(bucket.ResetTime)); errParse == nil {
+				window.ResetAt = resetAt
 			}
-			resetAt, errParse := time.Parse(time.RFC3339, strings.TrimSpace(bucket.ResetTime))
-			if errParse == nil && (fresh.ResetAt.IsZero() || resetAt.Before(fresh.ResetAt)) {
-				fresh.ResetAt = resetAt
-			}
+			windows = append(windows, window)
 		}
 	}
-	if fresh.Available {
-		fresh.ResetAt = time.Time{}
-	}
-	return fresh, buckets > 0
+	return windows
 }
 
 // ResetPluginQuota handles DELETE /v0/management/plugins/:id/quota and POST /v0/management/plugins/:id/quota/reset

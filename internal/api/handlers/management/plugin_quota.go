@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -108,6 +109,7 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 				c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
 				return
 			}
+			h.reconcileQuotaCooldown(c.Request.Context(), auth, quotaResp)
 			c.JSON(http.StatusOK, quotaResp)
 			return
 		}
@@ -123,6 +125,7 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 						c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("quota probe failed: %v", errProbe)})
 						return
 					}
+					h.reconcileQuotaCooldown(c.Request.Context(), auth, quotaResp)
 					c.JSON(http.StatusOK, quotaResp)
 					return
 				}
@@ -296,7 +299,41 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
 		return
 	}
+	h.reconcileQuotaCooldown(c.Request.Context(), auth, quotaResp)
 	c.JSON(http.StatusOK, quotaResp)
+}
+
+// reconcileQuotaCooldown applies a successful fresh quota fetch to the auth's
+// routing quota state. Failures are logged and never fail the fetch.
+func (h *Handler) reconcileQuotaCooldown(ctx context.Context, auth *coreauth.Auth, quotaResp pluginapi.QuotaFetchResponse) {
+	if h.authManager == nil || auth == nil {
+		return
+	}
+	if _, _, errReconcile := h.authManager.ReconcileQuota(ctx, auth.ID, quotaWindowsFromResponse(quotaResp)); errReconcile != nil {
+		log.WithError(errReconcile).Warnf("failed to reconcile quota cooldown for credential %s", auth.Index)
+	}
+}
+
+// quotaWindowsFromResponse maps every routing-gating bucket of every group to a
+// quota window. Buckets with GatesRouting=false are informational only and are
+// skipped; buckets without the field (including declarative quota_probe
+// buckets) gate routing.
+func quotaWindowsFromResponse(quotaResp pluginapi.QuotaFetchResponse) []coreauth.QuotaWindow {
+	var windows []coreauth.QuotaWindow
+	for _, group := range quotaResp.Groups {
+		for _, bucket := range group.Buckets {
+			if bucket.GatesRouting != nil && !*bucket.GatesRouting {
+				continue
+			}
+			remaining := bucket.RemainingFraction
+			window := coreauth.QuotaWindow{Name: bucket.Window, RemainingFraction: &remaining}
+			if resetAt, errParse := time.Parse(time.RFC3339, strings.TrimSpace(bucket.ResetTime)); errParse == nil {
+				window.ResetAt = resetAt
+			}
+			windows = append(windows, window)
+		}
+	}
+	return windows
 }
 
 // ResetPluginQuota handles DELETE /v0/management/plugins/:id/quota and POST /v0/management/plugins/:id/quota/reset

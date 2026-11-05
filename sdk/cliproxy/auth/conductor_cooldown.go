@@ -607,6 +607,27 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	m.mu.Unlock()
 	releaseMutation()
 
+	m.publishQuotaChange(authID, snapshot, now, cooldownStateChanged)
+	if errPersist != nil {
+		return nil, nil, errPersist
+	}
+	return snapshot, models, nil
+}
+
+// hasActiveQuotaBlock reports whether the auth carries a live auth-level quota block.
+func hasActiveQuotaBlock(auth *Auth, now time.Time) bool {
+	if auth == nil || !auth.Quota.Exceeded {
+		return false
+	}
+	if auth.Quota.Reason != "credential_quota" && auth.Quota.Reason != "quota" {
+		return false
+	}
+	return auth.Quota.NextRecoverAt.IsZero() || auth.Quota.NextRecoverAt.After(now)
+}
+
+// publishQuotaChange persists cooldown records and refreshes registry and
+// scheduler projections after a quota mutation has been applied to the auth.
+func (m *Manager) publishQuotaChange(authID string, snapshot *Auth, now time.Time, cooldownStateChanged bool) {
 	defer func() {
 		if cooldownStateChanged {
 			m.persistCooldownStates(context.Background())
@@ -627,10 +648,6 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
-	if errPersist != nil {
-		return nil, nil, errPersist
-	}
-	return snapshot, models, nil
 }
 
 func modelsForRegisteredAuth(authID string) []string {

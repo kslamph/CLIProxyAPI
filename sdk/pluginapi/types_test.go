@@ -1000,3 +1000,49 @@ func TestHostAuthModelsTypes(t *testing.T) {
 		t.Fatalf("decoded response = %#v, want %#v", decodedResp, resp)
 	}
 }
+
+func TestQuotaBucketGatesRoutingJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want *bool
+	}{
+		{"absent", `{"remainingFraction":0.5}`, nil},
+		{"null", `{"remainingFraction":0.5,"gatesRouting":null}`, nil},
+		{"camel true", `{"remainingFraction":0.5,"gatesRouting":true}`, boolPtrForTest(true)},
+		{"camel false", `{"remainingFraction":0.5,"gatesRouting":false}`, boolPtrForTest(false)},
+		{"snake true", `{"remaining_fraction":0.5,"gates_routing":true}`, boolPtrForTest(true)},
+		{"snake false", `{"remaining_fraction":0.5,"gates_routing":false}`, boolPtrForTest(false)},
+		{"camel wins over snake", `{"remainingFraction":0.5,"gatesRouting":false,"gates_routing":true}`, boolPtrForTest(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bucket QuotaBucket
+			if err := json.Unmarshal([]byte(tt.raw), &bucket); err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+			if (bucket.GatesRouting == nil) != (tt.want == nil) || (tt.want != nil && *bucket.GatesRouting != *tt.want) {
+				t.Fatalf("GatesRouting = %v, want %v", bucket.GatesRouting, tt.want)
+			}
+			if bucket.RemainingFraction != 0.5 {
+				t.Fatalf("RemainingFraction = %v, want 0.5", bucket.RemainingFraction)
+			}
+			out, err := json.Marshal(bucket)
+			if err != nil {
+				t.Fatalf("marshal error: %v", err)
+			}
+			var round QuotaBucket
+			if err := json.Unmarshal(out, &round); err != nil {
+				t.Fatalf("round-trip unmarshal error: %v", err)
+			}
+			if (round.GatesRouting == nil) != (tt.want == nil) || (tt.want != nil && *round.GatesRouting != *tt.want) {
+				t.Fatalf("round-trip GatesRouting = %v, want %v (json %s)", round.GatesRouting, tt.want, out)
+			}
+			if tt.want == nil && strings.Contains(string(out), "gatesRouting") {
+				t.Fatalf("absent GatesRouting must be omitted, got %s", out)
+			}
+		})
+	}
+}
+
+func boolPtrForTest(v bool) *bool { return &v }

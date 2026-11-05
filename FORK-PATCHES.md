@@ -208,6 +208,57 @@ sending upstream (then drop the local copy after it lands).
 - Upstream: not yet filed. Suggested issue title: "Management auth-file save
   registers a path-derived ID for plugin-owned credentials (duplicate entry)".
 
+### P4 - quota observations set/clear a credential's out-of-quota routing state (`local-only`)
+- Commits: merge of branch `quota-refresh-clears-cooldown` (`c8a8d37c`, `40e89820`,
+  `c10a4425`, `d37b97f0`, `8f5096e3`).
+- Problem (owner-observed 2026-11-04/05): fresh quota readings never reached the
+  routing state. (a) codex: a credential WITH quota was avoided because a stale
+  in-memory `credential_quota` block (reset time far ahead, persisted in the
+  cooldown store, retained across auth refresh) survived an early replenish
+  (reset card); (b) opencode-go: an exhausted credential carried no block, so it
+  was requested first and then fell back. The management quota fetch discarded
+  its data, and core providers (codex/claude) are fetched by the CPAM frontend
+  itself, which CPA never sees.
+- Change: `Manager.ReconcileQuota(authID, []QuotaWindow)` +
+  `EvaluateQuotaWindows` (`sdk/cliproxy/auth/conductor_quota_reconcile.go`).
+  Rules: any window with remaining <= 0 and an unreached reset = exhausted;
+  `recover_at` = the LATEST reset **among the exhausted windows only**; exhausted
+  with a recover time -> SET auth-level `credential_quota` until then
+  (authoritative both ways, overrides a shorter or longer existing block, works
+  with no prior block); no exhausted window -> RELEASE any active quota block
+  immediately; unknown readings / exhausted without a usable reset -> unchanged.
+  Wired into both plugin quota fetch paths (`fetchQuotaForPlugin`,
+  `FetchCredentialQuota`) and a new endpoint
+  `POST /v8/management/routing/quota/observation` (CPAM reports its parsed
+  codex/claude windows; `internal/api/handlers/management/quota_observation.go`).
+  `pluginapi.QuotaBucket` gains the optional `gatesRouting` (absent/true = counts;
+  false = informational, shown in the UI but ignored for routing; decoder accepts
+  `gates_routing`): z.ai's `monthly-tools` window must not take a credential out
+  of rotation. 429 handling is untouched and stays independent.
+- Files: `sdk/cliproxy/auth/conductor_quota_reconcile.go` (+test),
+  `sdk/cliproxy/auth/conductor_cooldown.go` (ResetQuota tail extracted into
+  `publishQuotaChange`), `internal/api/handlers/management/plugin_quota.go`
+  (+test), `internal/api/handlers/management/quota_observation.go`,
+  `internal/api/server_management_v8.go` (+test), `sdk/pluginapi/types.go` (+test),
+  `docs/management-api-v8.md`.
+- Conflict hotspots: `conductor_cooldown.go` (ResetQuota / publishQuotaChange),
+  `plugin_quota.go` (`quotaWindowsFromResponse`), `server_management_v8.go` route
+  table.
+- Verify: `go test ./sdk/pluginapi/ ./sdk/cliproxy/auth/ ./internal/api/...`
+  - the rule that most needs guarding is `recover_at` = latest reset among
+  EXHAUSTED windows only: `TestEvaluateQuotaWindows` (examples 1-3); routing proof
+  `TestManagerReconcileQuota_RoutingExcludesBlockedAuth`; gating
+  `TestFetchCredentialQuota_NonGating*`.
+- Siblings that must stay in step: CPAM P3 (reports codex/claude windows to the
+  endpoint and its manager-server proxy exact-path route) and zai-provider v0.1.3
+  (marks `monthly-tools` `gatesRouting:false`). opencode-go needs no change (all
+  its windows gate requests).
+- Drop when: upstream applies fresh provider quota readings to credential routing
+  state in both directions (set and release) and exposes a way for an external
+  client to report a quota observation. Re-run the tests above against upstream's
+  code; keep them as regression guards if upstream lacks equivalents.
+- Upstream: not filed.
+
 ## Untracked local files (not patches, do not lose)
 
 `rebuild.sh`, `run.sh` (local dev stack), `deploy-tyooc2-manifest.md` (historical

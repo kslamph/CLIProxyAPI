@@ -116,18 +116,18 @@ from the old tag, so `custom` keeps moving forward.
 - `docs/superpowers/` specs and plans stay uncommitted; do not bundle them
   into patch commits.
 
-State at 2026-11-05: `custom` = upstream v8.0.56 merged (`687e9395`) on top of
-`09c8d426` (upstream v8.0.55 + P1-P3 + local pluginhost/memory work). **Live on
-LXC 115: `1f846852` (`v8.0.56-custom`, tag `deploy/v8.0.56-1`)**; previous
-`deploy/v8.0.55-1` (`09c8d426`) is the rollback. P1-P3 verified unaffected by
-the sync (no conflicts; upstream still lists `gpt-6.1-terra` in its catalog, so
-P2 stays). 15-minute watch verdict: pass (see History).
+State at 2026-11-08: `custom` = upstream v8.0.60 merged (`2c8dd94e`, no conflicts;
+includes v8.0.59). **Live on LXC 115: `2c8dd94e` (`v8.0.60-custom`, tag
+`deploy/v8.0.60-1`)**; previous `deploy/v8.0.58-1` (`0965505e`) is the rollback.
+Drop-when re-check at v8.0.60: P1/P2 unaffected (`gpt-6.1-terra` still in the
+upstream catalog); P3 still needed (upstream `buildAuthFromFileData` has no
+plugin-parser consult); P4/P5 tests pass after upstream touched
+`conductor_cooldown.go`, `conductor_execution.go` and `codex_websockets_*`.
+15-minute watch verdict: pass (see History).
 
-Known upstream failure (not ours, reproduces at the bare `v8.0.56` tag):
-`go test ./internal/util` -> `TestInPlaceByteWritesAreReviewed` flags
-`copy(buf[envelopeHeaderSize:], value)` in `internal/kvstore/bolt_store.go` as an
-unreviewed in-place write. Everything else in `go test ./...` passes. Also,
-`gofmt -l` flags two upstream test files (`claude_thinking_replay_test.go`,
+The former known upstream failure (`TestInPlaceByteWritesAreReviewed`) no longer
+reproduces: `go test ./...` is fully green at `2c8dd94e`. `gofmt -l` still flags
+two upstream test files (`claude_thinking_replay_test.go`,
 `codex_stream_bootstrap_buffering_test.go`); leave them to avoid merge noise.
 
 ## Patch inventory
@@ -393,3 +393,4 @@ file CLIProxyAPI   # must say "dynamically linked"
 | 2026-11-05 | v8.0.56-custom | `f598ea69` | On **LXC 115**, branch `custom`, tag `deploy/v8.0.56-3`; P4 plus an info log line per quota observation. Shipped with opencode-go 0.2.4 and zai-provider 0.1.4 (host bridge self-corrects framing: fixes the cold-plugin quota-fetch 502) and CPAM `ba201f3a` (P2 plugin-quota Refresh UI restored). Watch pass but thin (21 API POSTs, no chat traffic through the two plugins). The deployed log line drops its detail (formatter allow-list); fix `b6518a69` is on `custom`, not yet deployed |
 | 2026-11-05 | v8.0.56-custom | `ea8e7bd4` | On **LXC 115**, branch `custom`, tag `deploy/v8.0.56-4`; ships `b6518a69` (quota-observation log detail moved into the message) + **P5** (Codex `server_is_overloaded` delegated to the client: no cooldown, no failover/retry-round/pool-hop/session rebind; client hint rewritten to `retry-after: 5` with `x-retry-metadata` removed; uncommitted headers fail as 429 + Retry-After 5; `overload-retry-after-seconds` default 5, ≤0 kill switch). Plugins unchanged (opencode-go 0.2.4, zai 0.1.4); config unchanged. 17 new tests; the two full-stack tests reproduce the production symptom on the base commit. Gate: full `go test ./...` with only the known flakes (`TestResponsesInterruptStopsHTTPUpstream` intermittent, `internal/util` byte-write review) |
 | 2026-11-06 | v8.0.58-custom | `0965505e` | On **LXC 115**, branch `custom`, tag `deploy/v8.0.58-1`; CPA binary and opencode-go/zai plugins rebuilt against the custom SDK and loaded/registered. `commercial-mode: false` applied with a 19:23Z restart so error-file logging remains enabled. Post-restart watch: pass (thin sampler; retro report 4,171 API POSTs, 0.12% 5xx, 0.91% non-2xx, no restart/PID/OOM/`memory.high` events). Known upstream `internal/util` byte-write review test remains the only full-suite failure. |
+| 2026-11-08 | v8.0.60-custom | `2c8dd94e` | On **LXC 115**, branch `custom`, tag `deploy/v8.0.60-1`; upstream v8.0.59+v8.0.60 merged with no conflicts, P1-P5 kept (P3 re-verified as still needed). Plugins NOT rebuilt (deviation from runbook 1.4: `internal/pluginhost` changed but `sdk/pluginapi`/`pluginabi` did not, SchemaVersion 1, plugins are c-shared and import only those two); opencode-go 0.2.4 and zai 0.1.4 loaded and registered. Config unchanged. Watch 12:28:15-12:42:45Z: pass, 118 API POSTs all 2xx (p50 4.4 s, p95 14.9 s) vs baseline 46 all 2xx; no restart/PID/OOM/`memory.high`; three transient memory spikes to ~170 MB reclaimed. **`cpa-health.py` reads journald but the guest logs requests to `main.log` (`logging-to-file: true`), so its own POST count is 0 and was also blind for v8.0.58; outcomes were recomputed from `main.log`.** At 12:45:26Z another session restarted CPA to deploy zai-provider v0.1.5; that restart is not part of this deploy ([job](~/devops/docs/jobs/2026-11-08/2026-11-08T122651Z-cpa-v8.0.60-deploy.md)). |

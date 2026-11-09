@@ -40,7 +40,53 @@ func NewFileBodySourceInDir(baseDir string, prefix string) (*FileBodySource, err
 	if errCreate != nil {
 		return nil, errCreate
 	}
+	registerActiveRequestLogParts(dir)
 	return &FileBodySource{dir: dir}, nil
+}
+
+// activeRequestLogParts tracks spool directories owned by live sources in this
+// process so the stale sweep never removes a long-running request's parts.
+var activeRequestLogParts sync.Map
+
+func requestLogPartsKey(dir string) string {
+	if abs, errAbs := filepath.Abs(dir); errAbs == nil {
+		dir = abs
+	}
+	return filepath.Clean(dir)
+}
+
+func registerActiveRequestLogParts(dir string) {
+	activeRequestLogParts.Store(requestLogPartsKey(dir), struct{}{})
+}
+
+func unregisterActiveRequestLogParts(dir string) {
+	activeRequestLogParts.Delete(requestLogPartsKey(dir))
+}
+
+func isActiveRequestLogParts(dir string) bool {
+	_, ok := activeRequestLogParts.Load(requestLogPartsKey(dir))
+	return ok
+}
+
+// requestLogPartsLastActivity returns the newest mtime of dir and its direct
+// entries. Appending to an existing part updates the part's mtime but not the
+// directory's, so the directory alone understates activity.
+func requestLogPartsLastActivity(dir string, dirInfo os.FileInfo) time.Time {
+	latest := dirInfo.ModTime()
+	children, errRead := os.ReadDir(dir)
+	if errRead != nil {
+		return latest
+	}
+	for _, child := range children {
+		info, errInfo := child.Info()
+		if errInfo != nil {
+			continue
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return latest
 }
 
 func sanitizeTempPrefix(prefix string) string {
@@ -240,6 +286,7 @@ func (s *FileBodySource) Cleanup() error {
 	s.paths = nil
 	s.cleaned = true
 	s.mu.Unlock()
+	defer unregisterActiveRequestLogParts(dir)
 
 	var firstErr error
 	for _, path := range paths {
@@ -269,6 +316,10 @@ func cleanupStaleRequestLogPartsAt(baseDir string, now time.Time, maxAge time.Du
 		if !strings.HasPrefix(entry.Name(), "request-log-parts-") || entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 			continue
 		}
+		path := filepath.Join(baseDir, entry.Name())
+		if isActiveRequestLogParts(path) {
+			continue
+		}
 		info, errInfo := entry.Info()
 		if errInfo != nil {
 			if os.IsNotExist(errInfo) {
@@ -279,10 +330,10 @@ func cleanupStaleRequestLogPartsAt(baseDir string, now time.Time, maxAge time.Du
 			}
 			continue
 		}
-		if info.ModTime().After(cutoff) {
+		if requestLogPartsLastActivity(path, info).After(cutoff) {
 			continue
 		}
-		if errRemove := os.RemoveAll(filepath.Join(baseDir, entry.Name())); errRemove != nil && !os.IsNotExist(errRemove) && firstErr == nil {
+		if errRemove := os.RemoveAll(path); errRemove != nil && !os.IsNotExist(errRemove) && firstErr == nil {
 			firstErr = errRemove
 		}
 	}

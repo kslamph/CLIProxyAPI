@@ -261,6 +261,27 @@ func NonStreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// nonStreamingKeepAliveTickerFactory lets tests drive media keep-alive ticks deterministically.
+var nonStreamingKeepAliveTickerFactory func(interval time.Duration) (<-chan time.Time, func())
+
+// SetNonStreamingKeepAliveTickerFactoryForTest overrides the media keep-alive ticker factory
+// for deterministic tests and returns a restore function.
+func SetNonStreamingKeepAliveTickerFactoryForTest(factory func(interval time.Duration) (<-chan time.Time, func())) func() {
+	prev := nonStreamingKeepAliveTickerFactory
+	nonStreamingKeepAliveTickerFactory = factory
+	return func() {
+		nonStreamingKeepAliveTickerFactory = prev
+	}
+}
+
+func newNonStreamingKeepAliveTicker(interval time.Duration) (<-chan time.Time, func()) {
+	if nonStreamingKeepAliveTickerFactory != nil {
+		return nonStreamingKeepAliveTickerFactory(interval)
+	}
+	ticker := time.NewTicker(interval)
+	return ticker.C, ticker.Stop
+}
+
 // StreamingBootstrapRetries returns how many times a streaming request may be retried before any bytes are sent.
 func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 	retries := defaultStreamingBootstrapRetries
@@ -744,12 +765,14 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 // StartMediaNonStreamingKeepAlive emits blank lines every nonstream-keepalive-interval
 // seconds while waiting for a non-streaming media response (image/video generation).
 //
-// It exists to survive proxy read timeouts: Cloudflare answers error 524 when the origin
-// sends no response bytes for ~100-125s, which long image/video jobs routinely exceed.
-// The first blank line commits the response headers, after which the proxy stops timing
-// the request out.
+// It exists to reduce the chance of proxy read/idle timeouts (for example Cloudflare error
+// 524 when the origin sends no response bytes for a long time) failing long image/video
+// jobs. It is best effort, not a guarantee: each timeout window restarts per received byte,
+// so the configured interval must stay below the proxy's timeout. Behaviour of any particular
+// proxy is not verified here.
 //
-// Only media endpoints may use it. Committing headers early pins the status code to 200
+// Only media endpoints that answer with a JSON body may use it; leading whitespace is valid
+// before JSON but would corrupt a binary download. Committing headers early pins the status code to 200
 // and drops upstream response headers, so a later upstream 4xx/5xx can only be delivered
 // as an error object inside a 200 response. Chat, Responses, Claude and Gemini endpoints
 // must NOT use it: they would report upstream 429/502 throttling as HTTP 200 and hide it
@@ -775,18 +798,18 @@ func (h *BaseAPIHandler) StartMediaNonStreamingKeepAlive(c *gin.Context, ctx con
 	stopChan := make(chan struct{})
 	var stopOnce sync.Once
 	var wg sync.WaitGroup
+	tickC, stopTicker := newNonStreamingKeepAliveTicker(interval)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		defer stopTicker()
 		for {
 			select {
 			case <-stopChan:
 				return
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-tickC:
 				_, _ = c.Writer.Write([]byte("\n"))
 				flusher.Flush()
 			}

@@ -75,6 +75,8 @@ func (s *Server) maxRequestBodyBytes() int64 {
 	return cfg.MaxRequestBodyBytes
 }
 
+// requestBodyAdmission accounts reservations in bytes, so a live reload of the
+// budget or quantum never changes what an existing reservation holds.
 type requestBodyAdmission struct {
 	mu      sync.Mutex
 	enabled bool
@@ -84,7 +86,15 @@ type requestBodyAdmission struct {
 	notify  chan struct{}
 }
 
-func newRequestBodyAdmission(cfg config.RequestBodyAdmissionConfig) *requestBodyAdmission {
+// requestBodyReservation is the admission share held by one request.
+type requestBodyReservation struct {
+	admission *requestBodyAdmission
+	cost      int64
+	released  bool
+	shrunk    bool
+}
+
+func normalizeRequestBodyAdmissionConfig(cfg config.RequestBodyAdmissionConfig) config.RequestBodyAdmissionConfig {
 	if cfg.BudgetBytes <= 0 && cfg.QuantumBytes <= 0 {
 		cfg = config.DefaultRequestBodyAdmissionConfig()
 	}
@@ -94,6 +104,11 @@ func newRequestBodyAdmission(cfg config.RequestBodyAdmissionConfig) *requestBody
 	if cfg.QuantumBytes <= 0 {
 		cfg.QuantumBytes = config.DefaultRequestBodyAdmissionQuantumBytes
 	}
+	return cfg
+}
+
+func newRequestBodyAdmission(cfg config.RequestBodyAdmissionConfig) *requestBodyAdmission {
+	cfg = normalizeRequestBodyAdmissionConfig(cfg)
 	return &requestBodyAdmission{enabled: cfg.Enabled, budget: cfg.BudgetBytes, quantum: cfg.QuantumBytes, notify: make(chan struct{})}
 }
 
@@ -101,67 +116,57 @@ func (a *requestBodyAdmission) configure(cfg config.RequestBodyAdmissionConfig) 
 	if a == nil {
 		return
 	}
-	if cfg.BudgetBytes <= 0 && cfg.QuantumBytes <= 0 {
-		cfg = config.DefaultRequestBodyAdmissionConfig()
-	}
-	if cfg.BudgetBytes <= 0 {
-		cfg.BudgetBytes = config.DefaultRequestBodyAdmissionBudgetBytes
-	}
-	if cfg.QuantumBytes <= 0 {
-		cfg.QuantumBytes = config.DefaultRequestBodyAdmissionQuantumBytes
-	}
+	cfg = normalizeRequestBodyAdmissionConfig(cfg)
 	a.mu.Lock()
 	changed := a.enabled != cfg.Enabled || a.budget != cfg.BudgetBytes || a.quantum != cfg.QuantumBytes
 	a.enabled, a.budget, a.quantum = cfg.Enabled, cfg.BudgetBytes, cfg.QuantumBytes
 	if changed {
-		close(a.notify)
-		a.notify = make(chan struct{})
+		a.wakeLocked()
 	}
 	a.mu.Unlock()
 }
 
-func (a *requestBodyAdmission) budgetUnitsLocked() int64 {
-	return (a.budget-1)/a.quantum + 1
+func (a *requestBodyAdmission) wakeLocked() {
+	close(a.notify)
+	a.notify = make(chan struct{})
 }
 
-func (a *requestBodyAdmission) weight(contentLength int64) int64 {
-	return a.weightWithMax(contentLength, 0)
-}
-
-func (a *requestBodyAdmission) weightWithMax(contentLength, maxBodyBytes int64) int64 {
-	if a == nil {
-		return 0
-	}
-	a.mu.Lock()
-	budget, quantum := a.budget, a.quantum
-	a.mu.Unlock()
-	if budget <= 0 || quantum <= 0 {
-		return 0
-	}
-	if maxBodyBytes <= 0 {
-		maxBodyBytes = budget
+// costLocked returns the reserved bytes for a body: the length rounded up to the
+// quantum, capped at the budget so an oversized body runs exclusively instead of
+// waiting forever. A negative or over-limit length reserves maxBodyBytes (or the
+// whole budget when no limit is configured).
+func (a *requestBodyAdmission) costLocked(contentLength, maxBodyBytes int64) int64 {
+	if maxBodyBytes <= 0 || maxBodyBytes > a.budget {
+		maxBodyBytes = a.budget
 	}
 	if contentLength < 0 || contentLength > maxBodyBytes {
 		contentLength = maxBodyBytes
 	}
-	if contentLength > budget {
-		// A body larger than the budget runs exclusively instead of waiting forever.
-		contentLength = budget
-	}
 	if contentLength <= 0 {
 		contentLength = 1
 	}
-	units := (contentLength-1)/quantum + 1
-	budgetUnits := (budget-1)/quantum + 1
-	if units > budgetUnits {
-		return budgetUnits
+	cost := (contentLength-1)/a.quantum*a.quantum + a.quantum
+	if cost > a.budget {
+		cost = a.budget
 	}
-	return units
+	return cost
 }
 
-func (a *requestBodyAdmission) acquire(ctx context.Context, weight int64) (func(), bool) {
-	if a == nil || weight <= 0 {
-		return func() {}, true
+func (a *requestBodyAdmission) cost(contentLength, maxBodyBytes int64) int64 {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.costLocked(contentLength, maxBodyBytes)
+}
+
+// acquire waits until a body of contentLength bytes fits in the budget. The cost
+// is recomputed on every attempt so a waiter always uses the current budget and
+// quantum. It returns a nil reservation when admission is disabled.
+func (a *requestBodyAdmission) acquire(ctx context.Context, contentLength, maxBodyBytes int64) (*requestBodyReservation, bool) {
+	if a == nil {
+		return nil, true
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -170,34 +175,64 @@ func (a *requestBodyAdmission) acquire(ctx context.Context, weight int64) (func(
 		a.mu.Lock()
 		if !a.enabled {
 			a.mu.Unlock()
-			return func() {}, true
+			return nil, true
 		}
-		budget := a.budgetUnitsLocked()
-		if weight > budget {
-			weight = budget
-		}
-		if a.used+weight <= budget {
-			a.used += weight
+		cost := a.costLocked(contentLength, maxBodyBytes)
+		if a.used+cost <= a.budget {
+			a.used += cost
 			a.mu.Unlock()
-			var once sync.Once
-			return func() {
-				once.Do(func() {
-					a.mu.Lock()
-					a.used -= weight
-					close(a.notify)
-					a.notify = make(chan struct{})
-					a.mu.Unlock()
-				})
-			}, true
+			return &requestBodyReservation{admission: a, cost: cost}, true
 		}
 		wait := a.notify
 		a.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return func() {}, false
+			return nil, false
 		case <-wait:
 		}
 	}
+}
+
+func (r *requestBodyReservation) release() {
+	if r == nil {
+		return
+	}
+	a := r.admission
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if r.released {
+		return
+	}
+	r.released = true
+	a.used -= r.cost
+	a.wakeLocked()
+}
+
+// Shrink lowers the reservation to the cost of the body that was actually
+// retained. It never blocks and only applies once; later calls are ignored.
+func (r *requestBodyReservation) Shrink(bodyBytes int64) {
+	if r == nil {
+		return
+	}
+	a := r.admission
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if r.released || r.shrunk {
+		return
+	}
+	r.shrunk = true
+	if next := a.costLocked(bodyBytes, 0); next < r.cost {
+		a.used -= r.cost - next
+		r.cost = next
+		a.wakeLocked()
+	}
+}
+
+// requestBodyDecodedSizeUnknown reports whether Content-Length understates the
+// bytes a handler will materialize because the body is content-encoded.
+func requestBodyDecodedSizeUnknown(r *http.Request) bool {
+	encoding := strings.TrimSpace(r.Header.Get("Content-Encoding"))
+	return encoding != "" && !strings.EqualFold(encoding, "identity")
 }
 
 func requestBodyAdmissionMiddleware(admission *requestBodyAdmission, maxBodyBytes func(*http.Request) int64) gin.HandlerFunc {
@@ -214,14 +249,22 @@ func requestBodyAdmissionMiddleware(admission *requestBodyAdmission, maxBodyByte
 		if maxBodyBytes != nil {
 			maxBytes = maxBodyBytes(c.Request)
 		}
-		weight := admission.weightWithMax(c.Request.ContentLength, maxBytes)
-		release, ok := admission.acquire(c.Request.Context(), weight)
+		contentLength := c.Request.ContentLength
+		if maxBytes > 0 && requestBodyDecodedSizeUnknown(c.Request) {
+			// Content-Length is the compressed size, but the decoded body is held in memory.
+			// Reserve the decoded limit until ReadRequestBody shrinks it to the real size.
+			contentLength = -1
+		}
+		reservation, ok := admission.acquire(c.Request.Context(), contentLength, maxBytes)
 		if !ok {
 			closeUnconsumedRequestOnAbort(c)
 			c.Abort()
 			return
 		}
-		defer release()
+		if reservation != nil {
+			defer reservation.release()
+			c.Set(handlers.RequestBodyReservationContextKey, reservation)
+		}
 		c.Next()
 	}
 }

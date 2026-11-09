@@ -35,8 +35,15 @@ server:
   max-request-body-bytes: 0
 
   # Aggregate memory budget for materializing request bodies before handlers read them.
+  # Reservations are accounted in bytes (body length rounded up to quantum-bytes) and last for the request.
   # Unknown-length bodies reserve the configured max-request-body-bytes, or the budget when no max is set.
+  # With max-request-body-bytes set, content-encoded (for example zstd) bodies are also treated as unknown
+  # length because Content-Length is the compressed size; the reservation shrinks to the decoded size once
+  # the body is read. With max-request-body-bytes: 0 the decoded size of encoded bodies is not bounded.
   # A body larger than the budget runs exclusively rather than waiting forever.
+  # Scope: this is admission control for one retained body copy per request, not an RSS or aggregate memory
+  # cap. Compressed wire bytes read by ReadRequestBody, decode buffers, request-log capture copies and
+  # response buffers are not counted once the reservation is shrunk or beyond the reserved size.
   request-body-admission:
     enabled: true
     budget-bytes: 134217728

@@ -17,6 +17,26 @@ import (
 // MaxRequestBodyBytesContextKey stores the configured request body size limit (in bytes) on the Gin context.
 const MaxRequestBodyBytesContextKey = "maxRequestBodyBytes"
 
+// RequestBodyReservationContextKey stores the request body admission reservation on the Gin context.
+const RequestBodyReservationContextKey = "requestBodyReservation"
+
+// RequestBodyReservation lets ReadRequestBody lower an admission reservation to the
+// size of the body it actually retained.
+type RequestBodyReservation interface {
+	Shrink(bodyBytes int64)
+}
+
+func shrinkRequestBodyReservation(c *gin.Context, bodyBytes int) {
+	if c == nil {
+		return
+	}
+	if reservation, ok := c.Get(RequestBodyReservationContextKey); ok {
+		if r, okReservation := reservation.(RequestBodyReservation); okReservation {
+			r.Shrink(int64(bodyBytes))
+		}
+	}
+}
+
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values before handlers inspect JSON fields.
 func ReadRequestBody(c *gin.Context) ([]byte, error) {
@@ -44,10 +64,13 @@ func ReadRequestBody(c *gin.Context) ([]byte, error) {
 			return nil, err
 		}
 		if json.Valid(raw) {
+			shrinkRequestBodyReservation(c, len(raw))
 			return raw, nil
 		}
 		return nil, err
 	}
+	// Admission reserved the decoded size limit up front; keep only what is retained.
+	shrinkRequestBodyReservation(c, len(decoded))
 	return decoded, nil
 }
 

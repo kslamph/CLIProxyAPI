@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func callPluginWithBodyFrame[T any](ctx context.Context, client pluginClient, method string, request any, kind pluginabi.BodyFrameKind, segments [][]byte, enabled bool) (T, error) {
@@ -37,22 +38,29 @@ func callPluginWithBodyFrame[T any](ctx context.Context, client pluginClient, me
 	return callPluginRaw[T](ctx, client, method, rawRequest)
 }
 
-func decodeFramedHostHTTPRequest(raw []byte) ([]byte, error) {
+// decodeHostHTTPCallRequest decodes a plugin->host HTTP callback request. When
+// the calling plugin negotiated binary body frames the raw body segment is used
+// directly, so the body is never re-encoded as Base64 JSON.
+func decodeHostHTTPCallRequest(ctx context.Context, raw []byte) (pluginapi.HTTPRequest, string, string, error) {
+	if !hostCallbackBinaryBodyFrames(ctx) {
+		return decodeHostHTTPRequestWithOperationID(raw)
+	}
 	frame, errDecode := pluginabi.DecodeBodyFrame(raw)
 	if errDecode != nil {
-		return nil, errDecode
+		return pluginapi.HTTPRequest{}, "", "", errDecode
 	}
 	if frame.Kind != pluginabi.BodyFrameHostHTTP || len(frame.Segments) != 1 {
-		return nil, fmt.Errorf("invalid host HTTP body frame: expected one host HTTP segment")
+		return pluginapi.HTTPRequest{}, "", "", fmt.Errorf("invalid host HTTP body frame: expected one host HTTP segment")
 	}
 	var req rpcHostHTTPRequest
 	if errUnmarshal := json.Unmarshal(frame.Metadata, &req); errUnmarshal != nil {
-		return nil, fmt.Errorf("decode framed host HTTP metadata: %w", errUnmarshal)
+		return pluginapi.HTTPRequest{}, "", "", fmt.Errorf("decode framed host HTTP metadata: %w", errUnmarshal)
 	}
 	if req.Request != nil {
 		req.Request.Body = frame.Segments[0]
 	} else {
 		req.Body = frame.Segments[0]
 	}
-	return json.Marshal(req)
+	httpReq, callbackID, operationID := hostHTTPRequestFromRPC(req)
+	return httpReq, callbackID, operationID, nil
 }

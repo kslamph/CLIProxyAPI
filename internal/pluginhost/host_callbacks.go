@@ -199,14 +199,7 @@ func (h *Host) callbackCallerPluginID(ctx context.Context, callbackID string) st
 }
 
 func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, error) {
-	if hostCallbackBinaryBodyFrames(ctx) {
-		var errDecode error
-		request, errDecode = decodeFramedHostHTTPRequest(request)
-		if errDecode != nil {
-			return nil, errDecode
-		}
-	}
-	httpReq, callbackID, operationID, errDecode := decodeHostHTTPRequestWithOperationID(request)
+	httpReq, callbackID, operationID, errDecode := decodeHostHTTPCallRequest(ctx, request)
 	if errDecode != nil {
 		return nil, errDecode
 	}
@@ -227,14 +220,7 @@ func newStreamContext(ctx context.Context) (context.Context, context.CancelFunc)
 }
 
 func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte, error) {
-	if hostCallbackBinaryBodyFrames(ctx) {
-		var errDecode error
-		request, errDecode = decodeFramedHostHTTPRequest(request)
-		if errDecode != nil {
-			return nil, errDecode
-		}
-	}
-	httpReq, callbackID, operationID, errDecode := decodeHostHTTPRequestWithOperationID(request)
+	httpReq, callbackID, operationID, errDecode := decodeHostHTTPCallRequest(ctx, request)
 	if errDecode != nil {
 		return nil, errDecode
 	}
@@ -371,6 +357,12 @@ func decodeHostHTTPRequestWithOperationID(raw []byte) (pluginapi.HTTPRequest, st
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return pluginapi.HTTPRequest{}, "", "", fmt.Errorf("decode host http request: %w", errUnmarshal)
 	}
+	httpReq, callbackID, operationID := hostHTTPRequestFromRPC(req)
+	return httpReq, callbackID, operationID, nil
+}
+
+// hostHTTPRequestFromRPC converts a decoded wire request, copying the body once.
+func hostHTTPRequestFromRPC(req rpcHostHTTPRequest) (pluginapi.HTTPRequest, string, string) {
 	if req.Request != nil {
 		wireProfile := req.Request.WireProfile
 		if wireProfile == nil {
@@ -382,7 +374,7 @@ func decodeHostHTTPRequestWithOperationID(raw []byte) (pluginapi.HTTPRequest, st
 			Headers:     map[string][]string(req.Request.Headers),
 			Body:        append([]byte(nil), req.Request.Body...),
 			WireProfile: cloneWireProfile(wireProfile),
-		}, req.HostCallbackID, strings.TrimSpace(req.OperationID), nil
+		}, req.HostCallbackID, strings.TrimSpace(req.OperationID)
 	}
 	return pluginapi.HTTPRequest{
 		Method:      req.Method,
@@ -390,7 +382,7 @@ func decodeHostHTTPRequestWithOperationID(raw []byte) (pluginapi.HTTPRequest, st
 		Headers:     map[string][]string(req.Headers),
 		Body:        append([]byte(nil), req.Body...),
 		WireProfile: cloneWireProfile(req.WireProfile),
-	}, req.HostCallbackID, strings.TrimSpace(req.OperationID), nil
+	}, req.HostCallbackID, strings.TrimSpace(req.OperationID)
 }
 
 func cloneWireProfile(src *pluginapi.HTTPWireProfile) *pluginapi.HTTPWireProfile {

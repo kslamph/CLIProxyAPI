@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1964,5 +1965,57 @@ func TestHostModelExecuteCallbackPreservesHTTPStatusOnError(t *testing.T) {
 	}
 	if got := clienterror.HTTPStatusFromError(errCall); got != http.StatusTooManyRequests {
 		t.Fatalf("clienterror.HTTPStatusFromError(errCall) = %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
+func TestHostHTTPFramedCallbacksDeliverRawBody(t *testing.T) {
+	body := bytes.Repeat([]byte{0, 0xff, 'x'}, 4096)
+	received := make(chan []byte, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ := io.ReadAll(r.Body)
+		received <- got
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	instance := &hostCallbackInstance{}
+	instance.binaryBodyFrames.Store(true)
+	ctx := withHostCallbackIdentity(context.Background(), "plugin-a", instance)
+	metadata, errMarshal := json.Marshal(rpcHostHTTPRequest{Method: http.MethodPost, URL: server.URL})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	frame, errFrame := pluginabi.EncodeBodyFrame(pluginabi.BodyFrameHostHTTP, metadata, body)
+	if errFrame != nil {
+		t.Fatal(errFrame)
+	}
+	host := New()
+
+	rawResp, errDo := host.callFromPlugin(ctx, pluginabi.MethodHostHTTPDo, frame)
+	if errDo != nil {
+		t.Fatalf("host.http.do error = %v", errDo)
+	}
+	resp, errDecode := decodeRPCEnvelope[pluginapi.HTTPResponse](rawResp)
+	if errDecode != nil || string(resp.Body) != "ok" {
+		t.Fatalf("do response = %#v err=%v", resp, errDecode)
+	}
+	if got := <-received; !bytes.Equal(got, body) {
+		t.Fatalf("do upstream body mismatch: %d bytes, want %d", len(got), len(body))
+	}
+
+	rawStream, errStream := host.callFromPlugin(ctx, pluginabi.MethodHostHTTPDoStream, frame)
+	if errStream != nil {
+		t.Fatalf("host.http.do_stream error = %v", errStream)
+	}
+	streamResp, errDecode := decodeRPCEnvelope[rpcHostHTTPStreamResponse](rawStream)
+	if errDecode != nil || streamResp.StreamID == "" {
+		t.Fatalf("stream response = %#v err=%v", streamResp, errDecode)
+	}
+	if got := <-received; !bytes.Equal(got, body) {
+		t.Fatalf("do_stream upstream body mismatch: %d bytes, want %d", len(got), len(body))
+	}
+	closeReq, _ := json.Marshal(rpcHostHTTPStreamCloseRequest{StreamID: streamResp.StreamID})
+	if _, errClose := host.callFromPlugin(ctx, pluginabi.MethodHostHTTPStreamClose, closeReq); errClose != nil {
+		t.Fatal(errClose)
 	}
 }

@@ -335,7 +335,9 @@ sending upstream (then drop the local copy after it lands).
   request. Accounting is in bytes so a reload of budget/quantum cannot change live
   reservations. With `max-request-body-bytes > 0`, content-encoded bodies reserve the decoded
   limit and `handlers.ReadRequestBody` shrinks the reservation to the decoded size.
-  Not an RSS cap. Known gap: with `max-request-body-bytes: 0` the decoded size of encoded
+  Not an RSS or strict aggregate cap: only one retained body copy per request is accounted; the
+  compressed wire bytes, decode buffers, request-log capture copies and response buffers are not.
+  Known gap (unresolved, awaiting owner decision): with `max-request-body-bytes: 0` the decoded size of encoded
   bodies is unbounded and admission cannot account for it.
 - Files: `internal/api/server_middleware.go`, `server.go`, `server_reload.go`,
   `internal/api/request_body_admission_test.go`, `internal/config/request_body_admission.go`

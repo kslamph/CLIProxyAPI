@@ -165,6 +165,9 @@ type Capabilities struct {
 	QuotaProvider QuotaProvider
 	// BinaryBodyFrames opts into negotiated CPBF request framing for executor calls
 	// and host HTTP callbacks. Legacy JSON/base64 framing remains the default.
+	// Once enabled the plugin must accept CPBF frames for those calls and the host
+	// requires CPBF for host HTTP callbacks; frames are capped at 128MiB in total,
+	// and larger executor requests fail instead of falling back to JSON.
 	BinaryBodyFrames bool
 }
 

@@ -327,6 +327,31 @@ sending upstream (then drop the local copy after it lands).
   if upstream lacks equivalents.
 - Upstream: not filed. The behaviour is fork policy (owner decision: simple, no cooldown, sticky).
 
+### P6 - CPBF binary body frames and request-log spool pruning (`local-only`)
+- Commits: `7244ab69` (original), `23daa206` + the follow-up on branch `cpa-review-plugin-frames`.
+- What: plugins opt in with the `binary_body_frames` capability. Executor execute / stream / count
+  / http requests and `host.http.do`/`do_stream` callbacks then carry JSON metadata plus raw body
+  segments in a CPBF frame (`sdk/pluginabi/body_frames.go`, `internal/pluginhost/body_frames.go`)
+  instead of Base64 JSON; non-opted-in plugins keep legacy JSON. Frames are bounded (128MiB whole
+  frame, 16 segments, length/version/kind checks). `host.http.*` frames are decoded straight from
+  the raw segment (no Base64 re-encode). `request-log-parts-*` spools older than 24h are removed
+  when a new `FileBodySource` is created, but never spools owned by a live source in this process,
+  and age is the newest mtime of the dir or its direct children (appends do not bump the dir).
+- Residual limits (deliberate, not bugs): there is NO JSON fallback for requests too large to frame
+  (>128MiB total of metadata + OriginalRequest + Payload): the call fails with
+  `plugin body frame is too large`, because the ABI only guarantees that an opted-in plugin accepts
+  CPBF, not mixed per-call JSON. Likewise a framed instance rejects legacy-JSON `host.http.*`
+  callbacks, so a plugin cannot fall back for oversize callbacks either. Sizing `max-request-body-bytes`
+  below ~64MiB avoids the case; lifting it needs a protocol change (e.g. a second capability or
+  host-side magic sniffing) coordinated with the plugin repos. Another CPA process sharing the log
+  dir is only protected while its spool files are being appended; a spool idle for >24h can be
+  swept. `EncodeBodyFrame` copies into a buffer then clones, so it is not zero-copy.
+- Verify: `go test ./internal/pluginhost ./internal/logging ./sdk/pluginabi -run 'BodyFrame|DecodeHostHTTPCall|HostHTTPFramed|CleanupStaleRequestLogParts|NewFileBodySourceInDir'`
+- Drop when: upstream ships an equivalent binary-body plugin transport (then re-check the
+  opencode-go plugin's own copy, which advertises the capability), or plugins stop needing
+  large-body transport. Sibling impact: `opencode-go-cliproxyapi` mirrors the frame format and its
+  cold-bridge retry depends on the host's `invalid plugin body frame` error text.
+
 ## Untracked local files (not patches, do not lose)
 
 `rebuild.sh`, `run.sh` (local dev stack), `deploy-tyooc2-manifest.md` (historical

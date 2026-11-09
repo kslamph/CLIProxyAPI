@@ -3,15 +3,11 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
-
-// encodeBodyFrame is a seam so tests can exercise the oversize path cheaply.
-var encodeBodyFrame = pluginabi.EncodeBodyFrame
 
 func callPluginWithBodyFrame[T any](ctx context.Context, client pluginClient, method string, request any, kind pluginabi.BodyFrameKind, segments [][]byte, enabled bool) (T, error) {
 	if !enabled {
@@ -34,12 +30,7 @@ func callPluginWithBodyFrame[T any](ctx context.Context, client pluginClient, me
 		var zero T
 		return zero, fmt.Errorf("marshal framed plugin request %s: %w", method, errMarshal)
 	}
-	rawRequest, errFrame := encodeBodyFrame(kind, metadata, segments...)
-	if errors.Is(errFrame, pluginabi.ErrBodyFrameTooLarge) {
-		// The frame cap is a transport bound, not a request limit: requests too
-		// large to frame keep using the legacy JSON encoding every plugin accepts.
-		return callPlugin[T](ctx, client, method, request)
-	}
+	rawRequest, errFrame := pluginabi.EncodeBodyFrame(kind, metadata, segments...)
 	if errFrame != nil {
 		var zero T
 		return zero, fmt.Errorf("encode framed plugin request %s: %w", method, errFrame)

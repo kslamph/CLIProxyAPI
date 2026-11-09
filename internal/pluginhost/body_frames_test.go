@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -45,83 +46,19 @@ func executorRequestFixture() pluginapi.ExecutorRequest {
 	return pluginapi.ExecutorRequest{OriginalRequest: []byte("original"), Payload: []byte("payload")}
 }
 
-func TestCallPluginWithBodyFrameFallsBackToLegacyJSONWhenFrameTooLarge(t *testing.T) {
-	original := encodeBodyFrame
-	encodeBodyFrame = func(pluginabi.BodyFrameKind, []byte, ...[]byte) ([]byte, error) {
-		return nil, pluginabi.ErrBodyFrameTooLarge
-	}
-	t.Cleanup(func() { encodeBodyFrame = original })
-
-	cases := []struct {
-		name    string
-		request any
-		kind    pluginabi.BodyFrameKind
-		check   func(*testing.T, []byte)
-		bodies  [][]byte
-		wantKey string
-	}{
-		{
-			name:    "executor",
-			request: rpcExecutorRequest{HostCallbackID: "cb-exec", ExecutorRequest: executorRequestFixture()},
-			kind:    pluginabi.BodyFrameExecutor,
-			bodies:  [][]byte{[]byte("original"), []byte("payload")},
-			check: func(t *testing.T, raw []byte) {
-				var got rpcExecutorRequest
-				if err := json.Unmarshal(raw, &got); err != nil {
-					t.Fatal(err)
-				}
-				if got.HostCallbackID != "cb-exec" || string(got.OriginalRequest) != "original" || string(got.Payload) != "payload" {
-					t.Fatalf("legacy request = %#v", got)
-				}
-			},
-		},
-		{
-			name:    "http",
-			request: rpcExecutorHTTPRequest{HostCallbackID: "cb-http", ExecutorHTTPRequest: pluginapi.ExecutorHTTPRequest{Body: []byte("body")}},
-			kind:    pluginabi.BodyFrameHostHTTP,
-			bodies:  [][]byte{[]byte("body")},
-			check: func(t *testing.T, raw []byte) {
-				var got rpcExecutorHTTPRequest
-				if err := json.Unmarshal(raw, &got); err != nil {
-					t.Fatal(err)
-				}
-				if got.HostCallbackID != "cb-http" || string(got.Body) != "body" {
-					t.Fatalf("legacy request = %#v", got)
-				}
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			client := &framedRequestClient{}
-			if _, err := callPluginWithBodyFrame[rpcEmptyResponse](context.Background(), client, "m", tc.request, tc.kind, tc.bodies, true); err != nil {
-				t.Fatalf("callPluginWithBodyFrame() error = %v", err)
-			}
-			if pluginabiHasFrameMagic(client.request) {
-				t.Fatal("oversize request was framed")
-			}
-			tc.check(t, client.request)
-		})
-	}
-}
-
-func TestCallPluginWithBodyFramePropagatesOtherEncodeErrors(t *testing.T) {
-	original := encodeBodyFrame
-	encodeBodyFrame = func(pluginabi.BodyFrameKind, []byte, ...[]byte) ([]byte, error) {
-		return nil, pluginabi.ErrInvalidBodyFrame
-	}
-	t.Cleanup(func() { encodeBodyFrame = original })
+func TestCallPluginWithBodyFrameRejectsOversizeWithoutLegacyFallback(t *testing.T) {
+	// Untouched pages: the encoder rejects on length before copying any segment.
+	huge := make([]byte, 129<<20)
 	client := &framedRequestClient{}
-	req := rpcExecutorRequest{ExecutorRequest: executorRequestFixture()}
-	if _, err := callPluginWithBodyFrame[rpcEmptyResponse](context.Background(), client, "m", req, pluginabi.BodyFrameExecutor, [][]byte{nil, nil}, true); err == nil {
-		t.Fatal("expected invalid frame error to propagate")
+	req := rpcExecutorRequest{HostCallbackID: "cb", ExecutorRequest: executorRequestFixture()}
+	_, errCall := callPluginWithBodyFrame[rpcEmptyResponse](context.Background(), client, "executor.execute", req, pluginabi.BodyFrameExecutor, [][]byte{huge, nil}, true)
+	if !errors.Is(errCall, pluginabi.ErrBodyFrameTooLarge) {
+		t.Fatalf("error = %v, want ErrBodyFrameTooLarge", errCall)
 	}
 	if client.request != nil {
-		t.Fatal("request was sent despite encode failure")
+		t.Fatal("oversize request was sent; opted-in plugins are only guaranteed to accept CPBF frames")
 	}
 }
-
-func pluginabiHasFrameMagic(raw []byte) bool { return bytes.HasPrefix(raw, []byte("CPBF")) }
 
 func TestDecodeHostHTTPCallRequestFramedMatchesLegacy(t *testing.T) {
 	body := bytes.Repeat([]byte{0, 1, 2, 0xff}, 1024)

@@ -693,10 +693,11 @@ func (h *Handler) buildAuthRecordsFromFileDataWithParser(path string, data []byt
 	var recorder *pluginOwnershipRecorder
 	if h != nil && h.cfg != nil {
 		sctx := &synthesizer.SynthesisContext{
-			Config:      h.cfg,
-			AuthDir:     h.cfg.AuthDir,
-			Now:         time.Now(),
-			IDGenerator: synthesizer.NewStableIDGenerator(),
+			Config:            h.cfg,
+			AuthDir:           h.cfg.AuthDir,
+			Now:               time.Now(),
+			IDGenerator:       synthesizer.NewStableIDGenerator(),
+			StrictFileParsing: true,
 		}
 		if parser != nil {
 			recorder = &pluginOwnershipRecorder{parser: parser}

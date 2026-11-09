@@ -146,6 +146,15 @@ sending upstream (then drop the local copy after it lands).
   filters `/v1/models`, Codex/Responses/Claude/Gemini model lists and rejects
   disallowed models with 403 on non-stream, stream and count paths. Keys with no
   entry are unrestricted.
+- Accepted scope (owner decision): the ACL covers model catalogs and the shared
+  non-stream, stream and count execution paths, not every provider capability.
+  Direct Codex Alpha Search (`/v1/alpha/search` and its
+  `/backend-api/codex/alpha/search` alias), Live and Realtime forwarding retain
+  API-key authentication but do not enforce this model policy. In an established
+  native Responses duplex WebSocket, later turns re-authenticate the API key but
+  do not check the newly returned `ModelPolicy`; narrowing the key's model access
+  requires a reconnect to take effect there. Keep these gaps documented rather
+  than expanding enforcement as part of this patch.
 - Files (23): `sdk/access/model_policy.go` (+test), `sdk/access/registry.go`,
   `sdk/api/handlers/model_access.go` (+test), `sdk/api/handlers/handlers_execution.go`,
   `handlers_stream.go`, `claude/code_handlers.go`, `gemini/gemini_handlers.go`,
@@ -189,16 +198,22 @@ sending upstream (then drop the local copy after it lands).
   appeared twice until restart. Cause: `buildAuthFromFileData` built the
   `SynthesisContext` without `PluginAuthParser` and then forced
   `auth.ID = authIDForPath(path)`.
-- Change (single file, `internal/api/handlers/management/auth_files_crud.go`):
-  `buildAuthFromFileData` now delegates to `buildAuthFromFileDataWithParser`,
-  passes the plugin host as `PluginAuthParser` through a small
-  `pluginOwnershipRecorder`, and only keeps the path-derived ID when no plugin
-  claimed the file. The `GetByID` lookup for the CreatedAt/refresh carry-over now
-  uses the final ID.
-- Tests (new file, no conflict risk): `auth_files_plugin_identity_test.go` -
+- Change (single production file, `internal/api/handlers/management/auth_files_crud.go`):
+  management file synthesis passes the plugin host as `PluginAuthParser` through
+  a small `pluginOwnershipRecorder` and preserves all plugin-assigned IDs,
+  including multi-auth files. A handled-empty result suppresses fallback records;
+  a successful unhandled result keeps the historical path-derived ID. The
+  `GetByID` lookup for the CreatedAt/refresh carry-over uses the final ID.
+  Synthesis uses `StrictFileParsing: true`, matching the watcher's single-file
+  snapshot path: a parser error rejects the write before file replacement,
+  record upsert/removal or post-persist hooks, rather than silently falling back
+  to a path-derived identity. Existing files and auth records remain unchanged.
+- Tests: `auth_files_plugin_identity_test.go` -
   `TestBuildAuthFromFileData_KeepsPluginAssignedID`,
   `TestWriteAuthFile_PluginOwnedFileDoesNotDuplicate`,
-  `TestBuildAuthFromFileData_UnclaimedFileKeepsPathID`.
+  `TestBuildAuthFromFileData_UnclaimedFileKeepsPathID`, multi-auth/handled-empty
+  coverage, and `TestWriteAuthFileRejectsPluginParserErrorWithoutMutation`
+  (single/multi parsers, handled/unhandled errors, new uploads and overwrites).
 - Verify: `go test ./internal/api/handlers/management`.
 - Related but separate: the opencode-go plugin carries a start-up reconcile for
   already-duplicated records (plugin P1/P2). P3 stops new duplicates from the
@@ -237,7 +252,8 @@ sending upstream (then drop the local copy after it lands).
   `pluginapi.QuotaBucket` gains the optional `gatesRouting` (absent/true = counts;
   false = informational, shown in the UI but ignored for routing; decoder accepts
   `gates_routing`): z.ai's `monthly-tools` window must not take a credential out
-  of rotation. 429 handling is untouched and stays independent.
+  of rotation. Incoming 429 errors retain their existing handling; the release
+  policy below determines which recorded errors a later quota refresh clears.
   Every observation writes one info line from `Manager.ReconcileQuota`, e.g.
   `quota observation: result=blocked reason="exhausted window with a future reset"
   recover_at=2026-11-09T00:00:00Z exhausted=weekly windows=rolling=1.00@...,weekly=0.00@...
@@ -246,6 +262,15 @@ sending upstream (then drop the local copy after it lands).
   formatter (`internal/logging` `logFieldOrder`) silently drops fields outside its
   allow-list, so only `auth_id` and `provider` are logrus fields. Nothing is logged
   when the reconcile itself fails (the callers already warn).
+- Accepted release policy (owner decision): when a capacity observation releases
+  an active quota block, use the full `ResetQuota`, not a quota-only cleanup.
+  This clears all model error/cooldown states, including independent transient
+  limits and other model errors; existing auth-level unauthorized protection and
+  disabled-credential checks remain. Quota recovery may coincide with upstream
+  recovery from other errors. Returning a healthy credential to rotation is
+  preferred over retaining a possibly stale block; a persistent upstream error
+  can be marked again on use at low cost. Keep this behavior and revisit only
+  if actual usage shows a problem.
 - Files: `sdk/cliproxy/auth/conductor_quota_reconcile.go` (+test),
   `sdk/cliproxy/auth/conductor_cooldown.go` (ResetQuota tail extracted into
   `publishQuotaChange`), `internal/api/handlers/management/plugin_quota.go`
@@ -298,6 +323,16 @@ sending upstream (then drop the local copy after it lands).
   (`codex.stream-bootstrap-buffering`) is unchanged as a feature, but for this class it no longer
   fails the attempt over - it delivers in-stream; every other overload-shaped class keeps the
   failover. `codex.stream-bootstrap-buffering` stays default-off.
+- Accepted rewrite gaps (owner decision): classification and raw-frame rewriting
+  do not cover identical WebSocket layouts. The WebSocket parser normalizes
+  `body.error` to a canonical `error`, but the duplex raw-frame detector/rewriter
+  only checks `error` and `response.error`; a forwarded wrapped `body.error`
+  frame can therefore retain the upstream long retry hint despite internal
+  delegated-overload classification. For a raw `response.failed` frame without
+  an error headers object, the rewrite fallback creates top-level `error.headers`
+  instead of `response.error.headers`, so the expected nested short hint may be
+  absent. These are static-review findings, not reproduced production incidents.
+  Keep the current implementation; fix these cases only if observed in use.
 - Files: `internal/config/config_types.go` (field + default + accessor), `internal/config/config_v8.go`
   (aliases), `internal/watcher/diff/config_diff.go` (reload log line), `config.example.yaml`,
   `internal/runtime/executor/{codex_executor_terminal,codex_executor_stream,codex_executor_execute,

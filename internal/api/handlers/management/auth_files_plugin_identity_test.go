@@ -2,7 +2,10 @@ package management
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -53,6 +56,21 @@ func (p *fakeMultiPluginAuthParser) ParseAuth(context.Context, pluginapi.AuthPar
 
 func (p *fakeMultiPluginAuthParser) ParseAuths(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
 	return p.auths, p.handled, nil
+}
+
+type failingPluginAuthParser struct {
+	handled bool
+	err     error
+}
+
+func (p *failingPluginAuthParser) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
+	return nil, p.handled, p.err
+}
+
+type failingMultiPluginAuthParser struct{ failingPluginAuthParser }
+
+func (p *failingMultiPluginAuthParser) ParseAuths(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+	return nil, p.handled, p.err
 }
 
 func newIdentityTestHandler(t *testing.T) (*Handler, string) {
@@ -200,6 +218,66 @@ func TestWriteAuthFileHonorsHandledEmptyPluginResult(t *testing.T) {
 	for _, auth := range h.authManager.List() {
 		if auth.FileName == "empty.json" {
 			t.Fatalf("handled-empty plugin result created auth: %#v", auth)
+		}
+	}
+}
+
+func TestWriteAuthFileRejectsPluginParserErrorWithoutMutation(t *testing.T) {
+	parserErr := errors.New("plugin auth parser unavailable")
+	parsers := []struct {
+		name   string
+		parser synthesizer.PluginAuthParser
+	}{
+		{"single_unhandled", &failingPluginAuthParser{err: parserErr}},
+		{"single_handled", &failingPluginAuthParser{handled: true, err: parserErr}},
+		{"multi_unhandled", &failingMultiPluginAuthParser{failingPluginAuthParser{err: parserErr}}},
+		{"multi_handled", &failingMultiPluginAuthParser{failingPluginAuthParser{handled: true, err: parserErr}}},
+	}
+	for _, tc := range parsers {
+		for _, overwrite := range []bool{false, true} {
+			mode := "new_file"
+			if overwrite {
+				mode = "overwrite"
+			}
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				h, authDir := newIdentityTestHandler(t)
+				ctx := context.Background()
+				const name = "plugin.json"
+				path := filepath.Join(authDir, name)
+				original := []byte(`{"type":"opencode-go","api_key":"original"}`)
+				if overwrite {
+					h.pluginAuthParser = &fakePluginAuthParser{provider: "opencode-go", id: "plugin-stable-id"}
+					if err := h.writeAuthFile(ctx, name, original); err != nil {
+						t.Fatalf("seed plugin auth: %v", err)
+					}
+				}
+				before := h.authManager.List()
+				h.pluginAuthParser = tc.parser
+				hookCalled := false
+				h.postAuthPersistHook = func(context.Context, *coreauth.Auth) error {
+					hookCalled = true
+					return nil
+				}
+
+				err := h.writeAuthFile(ctx, name, []byte(`{"type":"opencode-go","api_key":"replacement"}`))
+				if !errors.Is(err, errInvalidAuthFile) || !errors.Is(err, parserErr) {
+					t.Errorf("write error = %v, want invalid auth file wrapping parser error", err)
+				}
+				data, errRead := os.ReadFile(path)
+				if overwrite {
+					if errRead != nil || string(data) != string(original) {
+						t.Errorf("auth file changed after parser error: data=%s err=%v", data, errRead)
+					}
+				} else if !errors.Is(errRead, os.ErrNotExist) {
+					t.Errorf("failed upload created auth file: data=%s err=%v", data, errRead)
+				}
+				if after := h.authManager.List(); !reflect.DeepEqual(before, after) {
+					t.Error("parser error changed auth records")
+				}
+				if hookCalled {
+					t.Error("parser error invoked post-auth persist hook")
+				}
+			})
 		}
 	}
 }

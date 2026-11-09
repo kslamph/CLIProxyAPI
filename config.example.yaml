@@ -290,8 +290,10 @@ requests:
   # the response headers, which pins the status code to 200: a later upstream 4xx/5xx then arrives
   # as an error object inside a 200 response. Chat, Responses, Claude and Gemini endpoints never
   # emit these keep-alives, so they always keep their real status codes.
-  # Behind Cloudflare (error 524 after ~100-125s), a value comfortably below that limit is required;
-  # 52 is a safe choice (requests that fail before the interval still return their real status).
+  # Binary downloads (e.g. video content) never emit keep-alives. Pick a value comfortably below
+  # your proxy's read timeout (a Cloudflare 524 is commonly reported after ~100-125s without
+  # response bytes; 52 is an example, not a guarantee). Requests that fail before the first
+  # interval still return their real status.
   # Default: 0 (disabled).
   nonstream-keepalive-interval: 0
 

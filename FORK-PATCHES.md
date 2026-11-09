@@ -327,6 +327,27 @@ sending upstream (then drop the local copy after it lands).
   if upstream lacks equivalents.
 - Upstream: not filed. The behaviour is fork policy (owner decision: simple, no cooldown, sticky).
 
+### P6 - non-stream keep-alive limited to media JSON responses (`local-only`)
+- Commits: `b2529e84` (scope), plus the follow-up on branch `cpa-review-media-keepalive` (binary download + tests).
+- Problem: upstream `nonstream-keepalive-interval` writes a blank line every N seconds while any
+  non-stream request waits. The first blank line commits HTTP 200 and the headers, so a later
+  upstream 429/502 reaches the client as 200 and upstream headers are lost; for the video content
+  download it also prefixed the raw video bytes with `\n` and pre-empted `Content-Type`/`Content-Length`.
+- What: the helper is `BaseAPIHandler.StartMediaNonStreamingKeepAlive` and is called only by the
+  xAI image/video JSON handlers. Chat, Completions, Responses, Compact, Claude, Gemini and
+  Interactions never call it, so they keep real statuses. `VideosContent` (binary download) does not
+  call it. Tradeoff: a plain chat request has no proxy idle protection from this setting.
+  Limitation: an error that arrives after the first tick on a media endpoint is a JSON body inside
+  HTTP 200. Tick source is injectable for tests (`SetNonStreamingKeepAliveTickerFactoryForTest`).
+- Files: `sdk/api/handlers/handlers.go`, `sdk/api/handlers/openai/{openai_handlers,openai_responses_handlers,openai_images_handlers,openai_videos_handlers}.go`, `sdk/api/handlers/{claude/code_handlers,gemini/gemini_handlers,gemini/interactions_handlers}.go`, `internal/config/sdk_config.go`, `config.example.yaml`.
+- Tests: `sdk/api/handlers/openai/openai_media_keepalive_test.go`.
+- Conflict hotspots: any upstream re-adding `StartNonStreamingKeepAlive` calls to text handlers, or
+  new non-stream binary endpoints starting a keep-alive.
+- Verify: `go test ./sdk/api/handlers/... -run 'KeepAlive|Videos'`.
+- Drop when: upstream scopes the non-stream keep-alive away from text and binary responses, or
+  removes it.
+- Upstream: not filed.
+
 ## Untracked local files (not patches, do not lose)
 
 `rebuild.sh`, `run.sh` (local dev stack), `deploy-tyooc2-manifest.md` (historical

@@ -261,6 +261,27 @@ func NonStreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// nonStreamingKeepAliveTickerFactory lets tests drive media keep-alive ticks deterministically.
+var nonStreamingKeepAliveTickerFactory func(interval time.Duration) (<-chan time.Time, func())
+
+// SetNonStreamingKeepAliveTickerFactoryForTest overrides the media keep-alive ticker factory
+// for deterministic tests and returns a restore function.
+func SetNonStreamingKeepAliveTickerFactoryForTest(factory func(interval time.Duration) (<-chan time.Time, func())) func() {
+	prev := nonStreamingKeepAliveTickerFactory
+	nonStreamingKeepAliveTickerFactory = factory
+	return func() {
+		nonStreamingKeepAliveTickerFactory = prev
+	}
+}
+
+func newNonStreamingKeepAliveTicker(interval time.Duration) (<-chan time.Time, func()) {
+	if nonStreamingKeepAliveTickerFactory != nil {
+		return nonStreamingKeepAliveTickerFactory(interval)
+	}
+	ticker := time.NewTicker(interval)
+	return ticker.C, ticker.Stop
+}
+
 // StreamingBootstrapRetries returns how many times a streaming request may be retried before any bytes are sent.
 func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 	retries := defaultStreamingBootstrapRetries
@@ -775,18 +796,18 @@ func (h *BaseAPIHandler) StartMediaNonStreamingKeepAlive(c *gin.Context, ctx con
 	stopChan := make(chan struct{})
 	var stopOnce sync.Once
 	var wg sync.WaitGroup
+	tickC, stopTicker := newNonStreamingKeepAliveTicker(interval)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		defer stopTicker()
 		for {
 			select {
 			case <-stopChan:
 				return
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-tickC:
 				_, _ = c.Writer.Write([]byte("\n"))
 				flusher.Flush()
 			}

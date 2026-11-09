@@ -246,3 +246,54 @@ func TestVideosContentBinaryDownloadIsNotPrefixedByKeepAlive(t *testing.T) {
 		t.Fatalf("keep-alive tickers created = %d, want 0 for binary download", got)
 	}
 }
+
+func TestCompletionsNonStreamKeepsUpstreamStatusWithKeepAliveEnabled(t *testing.T) {
+	ticks := installKeepAliveTicks(t)
+	executor := &gatedExecutor{
+		id:  "keepalive-completions-executor",
+		err: &coreauth.Error{Code: "rate_limited", Message: "slow down", HTTPStatus: http.StatusTooManyRequests},
+	}
+	handler := newKeepAliveTestHandler(t, executor, "keepalive-completions-model")
+
+	resp := doKeepAliveRequest(t, http.MethodPost, "/v1/completions", "/v1/completions",
+		`{"model":"keepalive-completions-model","prompt":"hi"}`, handler.Completions)
+
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d body=%q", resp.Code, http.StatusTooManyRequests, resp.Body.String())
+	}
+	if got := ticks.created.Load(); got != 0 {
+		t.Fatalf("keep-alive tickers created = %d, want 0", got)
+	}
+}
+
+func TestResponsesAndCompactNonStreamKeepUpstreamStatusWithKeepAliveEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		route string
+		call  func(h *OpenAIResponsesAPIHandler) gin.HandlerFunc
+	}{
+		{"responses", "/v1/responses", func(h *OpenAIResponsesAPIHandler) gin.HandlerFunc { return h.Responses }},
+		{"compact", "/v1/responses/compact", func(h *OpenAIResponsesAPIHandler) gin.HandlerFunc { return h.Compact }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ticks := installKeepAliveTicks(t)
+			model := "keepalive-" + tc.name + "-model"
+			executor := &gatedExecutor{
+				id:  "keepalive-" + tc.name + "-executor",
+				err: &coreauth.Error{Code: "rate_limited", Message: "slow down", HTTPStatus: http.StatusTooManyRequests},
+			}
+			handler := newKeepAliveTestHandler(t, executor, model)
+			responsesHandler := NewOpenAIResponsesAPIHandler(handler.BaseAPIHandler)
+
+			resp := doKeepAliveRequest(t, http.MethodPost, tc.route, tc.route,
+				`{"model":"`+model+`","input":"hi"}`, tc.call(responsesHandler))
+
+			if resp.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want %d body=%q", resp.Code, http.StatusTooManyRequests, resp.Body.String())
+			}
+			if got := ticks.created.Load(); got != 0 {
+				t.Fatalf("keep-alive tickers created = %d, want 0", got)
+			}
+		})
+	}
+}

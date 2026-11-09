@@ -327,6 +327,22 @@ sending upstream (then drop the local copy after it lands).
   if upstream lacks equivalents.
 - Upstream: not filed. The behaviour is fork policy (owner decision: simple, no cooldown, sticky).
 
+### P6 - bound request body admission memory (`local-only`)
+- Commit: `1dccb472` (admission), follow-up in the review branch (byte accounting, encoded bodies).
+- What: `server.request-body-admission` (default on, 128 MiB budget, 2 MiB quantum) weighs each
+  request body before handlers read it; unknown-length bodies reserve `max-request-body-bytes`
+  or the whole budget, bodies above the budget run exclusively, reservations last for the
+  request. Accounting is in bytes so a reload of budget/quantum cannot change live
+  reservations. With `max-request-body-bytes > 0`, content-encoded bodies reserve the decoded
+  limit and `handlers.ReadRequestBody` shrinks the reservation to the decoded size.
+  Not an RSS cap. Known gap: with `max-request-body-bytes: 0` the decoded size of encoded
+  bodies is unbounded and admission cannot account for it.
+- Files: `internal/api/server_middleware.go`, `server.go`, `server_reload.go`,
+  `internal/api/request_body_admission_test.go`, `internal/config/request_body_admission.go`
+  (+ load/parse/yaml wiring), `sdk/api/handlers/request_body.go`, `config.example.yaml`.
+- Verify: `go test ./internal/api -run TestRequestBody`.
+- Drop when: upstream ships aggregate request-body admission/backpressure for body materialization.
+
 ## Untracked local files (not patches, do not lose)
 
 `rebuild.sh`, `run.sh` (local dev stack), `deploy-tyooc2-manifest.md` (historical

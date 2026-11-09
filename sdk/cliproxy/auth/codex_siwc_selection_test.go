@@ -284,3 +284,52 @@ func TestHomeDispatchHeadersSynthesizesCodexUserAgentForImageRequests(t *testing
 		t.Fatalf("original headers mutated: User-Agent = %q", got)
 	}
 }
+
+func TestIsCodexUseSIWCForRequestSIWCModeAlways(t *testing.T) {
+	codexHeaders := http.Header{"User-Agent": []string{"codex-tui/0.167.0 (Ubuntu 20.4.0; x86_64)"}}
+	newAuth := func(mode string, useSIWC bool) *Auth {
+		meta := map[string]any{
+			"type":     "codex",
+			"use_siwc": useSIWC,
+			"siwc":     map[string]any{"access_token": "siwc-token"},
+		}
+		if mode != "" {
+			meta["siwc_mode"] = mode
+		}
+		return &Auth{ID: "codex-siwc-mode", Provider: "codex", Status: StatusActive, Metadata: meta}
+	}
+
+	if IsCodexUseSIWCForRequest(context.Background(), newAuth("", true), codexHeaders) {
+		t.Fatal("default siwc_mode must keep Codex client requests on the outer partition")
+	}
+	if !IsCodexUseSIWCForRequest(context.Background(), newAuth(CodexSIWCModeAlways, true), codexHeaders) {
+		t.Fatal("siwc_mode=always must send Codex client requests through SIWC")
+	}
+	if !IsCodexUseSIWCForRequest(context.Background(), newAuth("", true), http.Header{"User-Agent": []string{"pi/1.5.0"}}) {
+		t.Fatal("non-Codex client request should use SIWC")
+	}
+	if IsCodexUseSIWCForRequest(context.Background(), newAuth(CodexSIWCModeAlways, false), codexHeaders) {
+		t.Fatal("siwc_mode=always without use_siwc must not use SIWC")
+	}
+	imageCtx := WithCodexOuterCredentialRequired(context.Background(), true)
+	if IsCodexUseSIWCForRequest(imageCtx, newAuth(CodexSIWCModeAlways, true), codexHeaders) {
+		t.Fatal("image execution must keep the outer partition in siwc_mode=always")
+	}
+}
+
+func TestCodexSIWCModeReadsAttributesAndMetadata(t *testing.T) {
+	fromMeta := &Auth{Metadata: map[string]any{"siwc_mode": " Always "}}
+	if got := CodexSIWCMode(fromMeta); got != CodexSIWCModeAlways {
+		t.Fatalf("CodexSIWCMode(metadata) = %q, want %q", got, CodexSIWCModeAlways)
+	}
+	fromAttr := &Auth{
+		Attributes: map[string]string{"siwc_mode": CodexSIWCModeAlways},
+		Metadata:   map[string]any{"siwc_mode": "non-codex"},
+	}
+	if got := CodexSIWCMode(fromAttr); got != CodexSIWCModeAlways {
+		t.Fatalf("CodexSIWCMode(attributes) = %q, want attributes to win", got)
+	}
+	if got := CodexSIWCMode(&Auth{}); got != "" {
+		t.Fatalf("CodexSIWCMode(empty) = %q, want empty", got)
+	}
+}

@@ -1698,3 +1698,28 @@ func TestCodexExecutorForceRefreshRejectedRefreshTokenWithoutDiskRotation_Issue7
 		t.Fatal("expected forced Refresh on unchanged rejected refresh_token without disk rotation to return an error, got nil")
 	}
 }
+
+func TestEnsureCodexSIWCCredentialsForRequestSIWCModeAlways(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-siwc-always",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"type":      "codex",
+			"use_siwc":  true,
+			"siwc_mode": "always",
+			"siwc":      map[string]any{"access_token": "siwc-token"},
+		},
+	}
+	codexHeaders := http.Header{"User-Agent": []string{"codex-tui/0.167.0"}}
+
+	if err := ensureCodexSIWCCredentialsForRequest(context.Background(), auth, "siwc-token", codexHeaders); err != nil {
+		t.Fatalf("always mode with SIWC token: %v", err)
+	}
+	err := ensureCodexSIWCCredentialsForRequest(context.Background(), auth, "", codexHeaders)
+	if err == nil || !strings.Contains(err.Error(), "siwc access_token is missing") {
+		t.Fatalf("always mode without SIWC token error = %v, want siwc access_token is missing", err)
+	}
+	if err := ensureCodexSIWCCredentialsForRequest(context.Background(), auth, "outer-token", http.Header{"User-Agent": []string{"pi/1.5.0"}}); err != nil {
+		t.Fatalf("non-Codex request with SIWC token: %v", err)
+	}
+}

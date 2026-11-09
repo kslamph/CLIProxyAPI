@@ -145,7 +145,11 @@ func (m *Manager) recordCanceledUpstreamCooldown(ctx context.Context, auth *Auth
 }
 
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options, executionSeq uint64) *cliproxyexecutor.StreamResult {
-	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
+	isImageExecution := isOpenAIImageExecutionOptions(opts)
+	if isImageExecution {
+		ctx = WithCodexOuterCredentialRequired(ctx, true)
+	}
+	ctx = WithCodexClientRequest(ctx, isImageExecution || IsCodexClientRequest(ctx, opts.Headers))
 	accessToken := authAccessTokenForRequest(ctx, auth, opts.Headers)
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()

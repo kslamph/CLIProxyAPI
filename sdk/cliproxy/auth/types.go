@@ -1006,7 +1006,54 @@ func headerValueFromHTTPHeader(headers http.Header, name string) string {
 	return ""
 }
 
+// CodexSIWCModeAlways is the siwc_mode value that sends every request on the
+// credential through the nested SIWC section, including Codex client requests.
+const CodexSIWCModeAlways = "always"
+
+// CodexSIWCMode returns the normalized siwc_mode switch of a Codex auth record.
+// An empty result means the default behaviour: Codex client requests keep the
+// outer credential partition.
+func CodexSIWCMode(a *Auth) string {
+	if a == nil {
+		return ""
+	}
+	if len(a.Attributes) > 0 {
+		if raw := strings.ToLower(strings.TrimSpace(a.Attributes["siwc_mode"])); raw != "" {
+			return raw
+		}
+	}
+	if a.Metadata != nil {
+		if raw, ok := a.Metadata["siwc_mode"].(string); ok {
+			if mode := strings.ToLower(strings.TrimSpace(raw)); mode != "" {
+				return mode
+			}
+		}
+	}
+	return ""
+}
+
 type codexClientRequestContextKey struct{}
+
+type codexOuterCredentialContextKey struct{}
+
+// WithCodexOuterCredentialRequired marks a request that must use the outer Codex
+// credential partition even when siwc_mode forces SIWC, for example OpenAI image
+// execution, which the SIWC endpoint does not serve.
+func WithCodexOuterCredentialRequired(ctx context.Context, required bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexOuterCredentialContextKey{}, required)
+}
+
+// IsCodexOuterCredentialRequired reports whether the request must use the outer partition.
+func IsCodexOuterCredentialRequired(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	required, _ := ctx.Value(codexOuterCredentialContextKey{}).(bool)
+	return required
+}
 
 // WithCodexClientRequest stores the resolved Codex client detection flag in ctx
 // so asynchronous post-request paths do not read a reused gin.Context.
@@ -1038,10 +1085,18 @@ func IsCodexClientRequest(ctx context.Context, clientHeaders ...http.Header) boo
 }
 
 // IsCodexUseSIWCForRequest reports whether a request should use the nested SIWC credential section.
-// Requests from Codex clients ignore use_siwc and always use non-SIWC credentials.
+// Requests from Codex clients normally ignore use_siwc and use non-SIWC credentials; a credential
+// with siwc_mode: always sends them through SIWC as well. Requests that explicitly require the
+// outer partition (OpenAI image execution) always keep it.
 func IsCodexUseSIWCForRequest(ctx context.Context, a *Auth, clientHeaders ...http.Header) bool {
 	if !IsCodexUseSIWC(a) {
 		return false
+	}
+	if IsCodexOuterCredentialRequired(ctx) {
+		return false
+	}
+	if CodexSIWCMode(a) == CodexSIWCModeAlways {
+		return true
 	}
 	if IsCodexClientRequest(ctx, clientHeaders...) {
 		return false

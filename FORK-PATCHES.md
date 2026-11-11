@@ -39,8 +39,8 @@ Push `custom` and the `deploy/*` tags to `kslamph` after a deploy; never push `m
 or anything else to `origin`.
 
 Worktrees: `custom` is checked out in exactly one worktree (currently
-`~/orca/workspaces/CLIProxyAPI/v8.0.55-full-integration`; the directory name is
-historical). `~/goproj/CLIProxyAPI` stays on `main` as the upstream mirror. Make
+`~/orca/workspaces/CLIProxyAPI/custom`; the directory was renamed from the old
+`v8.0.55-full-integration`, so ignore that name if it appears in old notes). `~/goproj/CLIProxyAPI` stays on `main` as the upstream mirror. Make
 every other worktree from `custom` through Orca (`orca worktree create`,
 `orca worktree rm`), and remove it when its branch is merged. Do not leave
 long-lived `scratch/*` branches.
@@ -127,6 +127,13 @@ their symbols (`api-key-model-access`, `ReconcileQuota`, `quota/observation`,
 no upstream equivalent; their Verify tests are green on `custom` after upstream
 touched `conductor_cooldown.go`, `conductor_execution.go`, `codex_websockets_*`.
 15-minute watch verdict: pass (see History).
+
+State at 2026-11-11: `custom` = upstream v8.0.66 merged (`d31669dd`; four adjacent-edit
+conflicts in `sdk/cliproxy/auth/errors.go`, `helps/payload_finalizer.go`, `config_v8_test.go`,
+`codex_executor_auth_test.go`, both sides kept); full `go test ./...` green. Carries P1-P9.
+Behaviour change from upstream `fa11a573`: cloaked Claude requests no longer get an injected
+`fallbacks` entry unless `upstream.claude.server-side-fallback: true` (live config has no such
+setting and no explicit fallbacks, so it now runs with the new default off).
 
 The former known upstream failure (`TestInPlaceByteWritesAreReviewed`) no longer
 reproduces: `go test ./...` is fully green at `2c8dd94e`. `gofmt -l` still flags
@@ -426,6 +433,29 @@ sending upstream (then drop the local copy after it lands).
 - Verify: `go test ./sdk/api/handlers/... -run 'KeepAlive|Videos'`.
 - Drop when: upstream scopes the non-stream keep-alive away from text and binary responses, or
   removes it.
+- Upstream: not filed.
+
+### P9 - `siwc_mode: always` forces SIWC for Codex client requests (`local-only`)
+- Commit: `edc380c7`.
+- What: a Codex credential with `use_siwc: true` and `siwc_mode: always` sends every request
+  through the nested SIWC partition, including requests from Codex clients (codex-tui, Codex
+  Desktop), which upstream skips SIWC for by design. `IsCodexUseSIWCForRequest` honours
+  `siwc_mode` before the client-UA exclusion; `ensureCodexSIWCCredentialsForRequest` requires the
+  SIWC token whenever the request resolves to SIWC (error `siwc access_token is missing`);
+  `WithCodexOuterCredentialRequired` keeps OpenAI image execution on the outer partition
+  regardless of the mode (SIWC does not serve it); `siwc_mode` is preserved across credential
+  rewrites/refreshes like `use_siwc` and shown in the management auth-files listing.
+- Files: `internal/api/handlers/management/auth_files.go`, `internal/auth/codex/token.go`,
+  `internal/runtime/executor/codex_executor_auth.go` (+test), `sdk/cliproxy/auth/{types,
+  conductor_execution,conductor_stream,metadata_merge}.go`, `sdk/cliproxy/auth/codex_siwc_selection_test.go`.
+- Conflict hotspots: `sdk/cliproxy/auth/types.go` (`IsCodexUseSIWCForRequest`, siwc_mode
+  helpers), the SIWC selection call sites in `conductor_execution.go` / `conductor_stream.go`,
+  `ensureCodexSIWCCredentialsForRequest`. Upstream changes to the SIWC partition logic are the
+  usual cause; re-apply "siwc_mode before the client-UA exclusion" and "image requests keep the
+  outer partition".
+- Verify: `go test ./sdk/cliproxy/auth/ ./internal/runtime/executor/ -run 'SIWC'`.
+- Drop when: upstream lets a credential force SIWC for Codex client requests (an equivalent
+  `siwc_mode`/always option), or stops excluding Codex clients from SIWC.
 - Upstream: not filed.
 
 ## Untracked local files (not patches, do not lose)

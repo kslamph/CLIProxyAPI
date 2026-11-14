@@ -211,16 +211,19 @@ sending upstream (then drop the local copy after it lands).
 
 ### P3 - keep plugin-assigned auth IDs on v8 management writes (`candidate`)
 - Commit: `cf7f0f92` (`fix(management): keep plugin-assigned auth IDs ...`).
-- Review fixes (2026-11-15): plugin-provided `FileName` values are retained (only empty names default to the source basename). New strict parser, multi-auth identity reconciliation, atomic upload writes and delete-all virtual-record cleanup are enabled only by the maintained v8 upload/delete wrappers; deprecated v0 retains its original single-record/path-ID/direct-write behavior. Shared OAuth and field-save helpers retain upstream behavior, and the existing SIWC mutation fencing remains independent. Temp-file errors use method-specific names. Regression tests cover raw/multipart v0/v8 uploads for multi-record, parser-error and handled-empty results, and names against watcher synthesis.
-- Bug: saving or uploading a plugin-owned auth file through
-  `POST /v0/management/auth-files` (this is what the CPAM UI does when editing
-  excluded models) registered an auth with the path-derived ID `<file>.json`,
+- Review fixes (2026-11-15): plugin-provided `FileName` values are retained (only empty names default to the source basename). New strict parser, multi-auth identity reconciliation, atomic upload writes and delete-all virtual-record cleanup are enabled only by the maintained v8 upload/delete wrappers; deprecated v0 retains its original single-record/path-ID/direct-write behavior. Shared OAuth and field-save synthesis retains upstream behavior with synchronized plugin snapshots, and the existing SIWC mutation fencing remains independent. Temp-file errors use method-specific names. V8-only symlink-aware identity matching covers upload and delete-all without changing shared legacy path matching. Regression tests cover raw/multipart v0/v8 uploads for multi-record, parser-error and handled-empty results, and names against watcher synthesis.
+- Bug: historically, saving or uploading a plugin-owned auth file through
+  the management API (including legacy `POST /v0/management/auth-files`) registered an auth with the path-derived ID `<file>.json`,
   while the file watcher registered the plugin-assigned ID (for opencode-go:
   `opencode-go-key-<sha256(api_key)>`) for the same file -> the credential
   appeared twice until restart. Cause: `buildAuthFromFileData` built the
   `SynthesisContext` without `PluginAuthParser` and then forced
   `auth.ID = authIDForPath(path)`.
-- Change (single production file, `internal/api/handlers/management/auth_files_crud.go`):
+- Maintained fix: `POST /v8/management/credentials` upload and its v8 delete wrapper
+  enable the new behavior; deprecated v0 uploads/deletes retain upstream semantics.
+  Shared OAuth/field-save paths keep their original synthesis semantics.
+- Compatibility limitation: CPAM currently hardcodes `/v0/management` (`apps/web/src/utils/constants.ts`). Its auth-file editor therefore retains legacy behavior and does not receive this v8-only fix until CPAM is separately migrated. No CPAM source changes are included here.
+- Change (`internal/api/handlers/management/auth_files_crud.go` and v8 wrappers):
   v8 upload synthesis passes the plugin host as `PluginAuthParser` through
   a small `pluginOwnershipRecorder` and preserves all plugin-assigned IDs,
   including multi-auth files. A handled-empty result suppresses fallback records;
@@ -241,8 +244,8 @@ sending upstream (then drop the local copy after it lands).
   already-duplicated records (plugin P1/P2). P3 stops new duplicates from the
   host side; the plugin reconcile only repairs old state at (re)configure time.
   Both are needed until upstream fixes the host.
-- Drop when: upstream `buildAuthFromFileData` consults the plugin parser and
-  preserves plugin IDs. Check by re-running the three tests above against
+- Drop when: upstream maintained v8 uploads consult the plugin parser and
+  preserve all plugin IDs and names, with equivalent strict-error and handled-empty semantics. Check by re-running the three tests above against
   upstream's code; if they pass without our change, delete the patch (keep the
   test file as a regression guard if upstream has no equivalent).
 - Upstream: [PR #7555](https://github.com/router-for-me/CLIProxyAPI/pull/7555),

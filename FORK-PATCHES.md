@@ -190,6 +190,8 @@ sending upstream (then drop the local copy after it lands).
   through GET/PUT `/v8/management/config/access`.
 - Drop when: upstream ships an equivalent per-key model ACL. Then migrate the
   live `config.yaml` key and re-test CPAM's editor.
+- Upstream: [PR #7554](https://github.com/router-for-me/CLIProxyAPI/pull/7554),
+  submitted 2026-11-15; retain this patch until an equivalent upstream release is merged.
 
 ### P2 - drop `gpt-6.1-terra` from codex-free (`local-only`, time-limited)
 - Commit: `3914533b`.
@@ -239,8 +241,8 @@ sending upstream (then drop the local copy after it lands).
   preserves plugin IDs. Check by re-running the three tests above against
   upstream's code; if they pass without our change, delete the patch (keep the
   test file as a regression guard if upstream has no equivalent).
-- Upstream: not yet filed. Suggested issue title: "Management auth-file save
-  registers a path-derived ID for plugin-owned credentials (duplicate entry)".
+- Upstream: [PR #7555](https://github.com/router-for-me/CLIProxyAPI/pull/7555),
+  submitted 2026-11-15; retain this patch until an equivalent upstream release is merged.
 
 ### P4 - quota observations set/clear a credential's out-of-quota routing state (`local-only`)
 - Commits: merge of branch `quota-refresh-clears-cooldown` (`c8a8d37c`, `40e89820`,

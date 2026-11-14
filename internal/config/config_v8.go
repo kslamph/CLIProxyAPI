@@ -74,7 +74,7 @@ var v8KeyFamilies = []configPath{
 
 func buildV8Paths() []configPath {
 	prefixes := []configPath{
-		{"host", "server.host"}, {"port", "server.port"}, {"max-request-body-bytes", "server.max-request-body-bytes"}, {"request-body-admission", "server.request-body-admission"}, {"trusted-proxies", "server.trusted-proxies"},
+		{"host", "server.host"}, {"port", "server.port"}, {"max-request-body-bytes", "server.max-request-body-bytes"}, {"trusted-proxies", "server.trusted-proxies"},
 		{"github-token", "server.github-token"},
 		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"}, {"kv-store", "server.kv-store"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"}, {"api-key-model-access", "access.api-key-model-access"},
@@ -281,9 +281,6 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 	decoded := legacyConfig(*cfg)
 	if err = root.Decode(&decoded); err != nil {
 		return err
-	}
-	if yamlPath(node, "request-body-admission") == nil && yamlPath(node, "server.request-body-admission") == nil {
-		decoded.RequestBodyAdmission = cfg.RequestBodyAdmission
 	}
 	if errValidate := decoded.Models.Validate(); errValidate != nil {
 		return errValidate
@@ -976,12 +973,8 @@ func ValidateV8Config(data []byte) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(encoded))
 	decoder.KnownFields(true)
 	var cfg legacyConfig
-	cfg.RequestBodyAdmission = DefaultRequestBodyAdmissionConfig()
 	if errDecode := decoder.Decode(&cfg); errDecode != nil {
 		return errDecode
-	}
-	if errValidate := cfg.RequestBodyAdmission.Validate(); errValidate != nil {
-		return errValidate
 	}
 	return cfg.Models.Validate()
 }

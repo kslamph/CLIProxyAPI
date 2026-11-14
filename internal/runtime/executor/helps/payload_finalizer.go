@@ -52,10 +52,7 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 	requestedModel := PayloadRequestedModel(opts, req.Model)
 	requestPath := PayloadRequestPath(opts)
 	headers := opts.Headers.Clone()
-	source := original
-	if payloadRulesNeedOriginal(cfg) {
-		source = append([]byte(nil), original...)
-	}
+	source := append([]byte(nil), original...)
 	var auth *cliproxyauth.Auth
 	if len(auths) > 0 {
 		auth = auths[0]
@@ -90,14 +87,6 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 	})
 	builtinFinalizerCodePtr.Store(payloadFinalizerKeyPtr(fn))
 	return fn
-}
-
-func payloadRulesNeedOriginal(cfg *config.Config) bool {
-	if cfg == nil {
-		return false
-	}
-	rules := cfg.Payload
-	return len(rules.Default) > 0 || len(rules.DefaultRaw) > 0
 }
 
 type payloadFinalizerKey struct{}

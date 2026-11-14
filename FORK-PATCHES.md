@@ -140,6 +140,15 @@ reproduces: `go test ./...` is fully green at `2c8dd94e`. `gofmt -l` still flags
 two upstream test files (`claude_thinking_replay_test.go`,
 `codex_stream_bootstrap_buffering_test.go`); leave them to avoid merge noise.
 
+State at 2026-11-15: P6 (request-body admission) retired by owner decision.
+Production had admission disabled; aggregate admission and its configuration are removed,
+including the body-copy optimizations introduced in the original P6 commit. P7 binary
+framing and spool pruning remain. Before deploying this change, remove the obsolete
+`server.request-body-admission` block (or legacy top-level `request-body-admission`)
+from configuration: strict v8 validation no longer accepts it. This change does not
+alter `server.max-request-body-bytes` or introduce a decoded-size limit.
+Active patches: P1-P5 and P7-P9; patch numbers remain stable.
+
 ## Patch inventory
 
 Status key: `local-only` = not in upstream, must be carried; `candidate` = worth
@@ -368,26 +377,6 @@ sending upstream (then drop the local copy after it lands).
   capped backoff). Re-run the tests above against upstream's code; keep them as regression guards
   if upstream lacks equivalents.
 - Upstream: not filed. The behaviour is fork policy (owner decision: simple, no cooldown, sticky).
-
-### P6 - bound request body admission memory (`local-only`)
-- Commits: `1dccb472` (admission), `9eee22d4` and `f9d1dff3` (byte accounting, encoded bodies, scope).
-- What: `server.request-body-admission` (default on, 128 MiB budget, 2 MiB quantum) weighs each
-  request body before handlers read it; unknown-length bodies reserve `max-request-body-bytes`
-  or the whole budget, bodies above the budget run exclusively, reservations last for the
-  request. Accounting is in bytes so a reload of budget/quantum cannot change live
-  reservations. With `max-request-body-bytes > 0`, content-encoded bodies reserve the decoded
-  limit and `handlers.ReadRequestBody` shrinks the reservation to the decoded size.
-  Not an RSS or strict aggregate cap: only one retained body copy per request is accounted; the
-  compressed wire bytes, decode buffers, request-log capture copies and response buffers are not.
-  Known gap: with `max-request-body-bytes: 0` the decoded size of encoded bodies is unbounded
-  and admission cannot account for it. Owner decision (2026-11-09): disable admission in the
-  production config to avoid reducing concurrency; keep the code fixes without introducing
-  a new decoded-size limit or changing the default unlimited-size policy.
-- Files: `internal/api/server_middleware.go`, `server.go`, `server_reload.go`,
-  `internal/api/request_body_admission_test.go`, `internal/config/request_body_admission.go`
-  (+ load/parse/yaml wiring), `sdk/api/handlers/request_body.go`, `config.example.yaml`.
-- Verify: `go test ./internal/api -run TestRequestBody`.
-- Drop when: upstream ships aggregate request-body admission/backpressure for body materialization.
 
 ### P7 - CPBF binary body frames and request-log spool pruning (`local-only`)
 - Commits: `7244ab69` (original), `23daa206` and `f84b6116` (review fixes and protocol limits).

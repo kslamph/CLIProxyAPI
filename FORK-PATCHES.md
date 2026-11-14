@@ -152,6 +152,17 @@ Deployed 2026-11-14T22:31Z on LXC 115: `213cd057`, tag `deploy/v8.0.66-1`.
 The obsolete admission block was removed in place; current-build baseline and the
 15-minute post-deploy watch passed. See `~/devops/docs/jobs/2026-11-14/2026-11-14T222440Z-cpa-custom-p6-drop-deploy.md`.
 
+State at 2026-11-15 (later): `custom` = upstream v8.0.72 merged (sync/v8.0.72; three adjacent-edit
+conflicts in `internal/config/config_v8.go`, `openai_compat_executor.go` and
+`handlers_interceptors_test.go`, both sides kept). P6 stays retired. Carries P1-P5 and P7-P9.
+Drop-when re-check at v8.0.72: `git grep` of the tag finds none of `api-key-model-access`,
+`ReconcileQuota`, `quota/observation`, `gatesRouting`, `overload-retry-after-seconds`,
+`ErrorCodeOverloadDelegated`, `siwc_mode`, `CPBF`; P2 still needed (`gpt-6.1-terra` still in the
+catalog); P3 still needed (`buildAuthFromFileData` has no plugin-parser consult). Known test
+state: `TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader` (`internal/pluginhost`) fails
+on pristine v8.0.72 as well; `go test -count=2 ./sdk/cliproxy` leaks state on `custom` too.
+Upstream v8.0.66..v8.0.72 touched `sdk/pluginapi/types.go` -> rebuild plugins against the new SDK.
+
 ## Patch inventory
 
 Status key: `local-only` = not in upstream, must be carried; `candidate` = worth

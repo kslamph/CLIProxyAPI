@@ -1285,6 +1285,9 @@ type statusErr struct {
 	// overloadDelegated marks a Codex capacity overload rejection whose retry is
 	// delegated to the client: no credential cooldown and no re-dispatch.
 	overloadDelegated bool
+	tosViolation      bool
+	tosAppealURL      string
+	tosAppealURLText  string
 	// diagnostic is a content-free detail for logs only; it never reaches clients.
 	diagnostic string
 }
@@ -1315,6 +1318,33 @@ func (e statusErr) IsTransientRateLimit() bool { return e.transientRateLimit }
 // not be replayed on another credential; the client-visible retry hint was
 // rewritten to a short local value.
 func (e statusErr) IsCodexOverloadDelegated() bool { return e.overloadDelegated }
+
+// IsTerminalTOSViolation marks a 403 PERMISSION_DENIED carrying an ErrorInfo
+// reason=TOS_VIOLATION. The conductor must deactivate the credential rather
+// than cool it, so sibling credentials are not hammered during a sweep.
+func (e statusErr) IsTerminalTOSViolation() bool { return e.tosViolation }
+
+// TOSAppealMetadata exposes the operator-facing appeal detail extracted from
+// the ErrorInfo metadata so the conductor can persist it on the auth record.
+func (e statusErr) TOSAppealMetadata() map[string]string {
+	if !e.tosViolation || (e.tosAppealURL == "" && e.tosAppealURLText == "") {
+		return nil
+	}
+	meta := map[string]string{
+		"tos_appeal_url":      e.tosAppealURL,
+		"tos_appeal_url_text": e.tosAppealURLText,
+	}
+	return meta
+}
+
+// ErrorCode exposes the machine-readable classification for terminal TOS
+// violations so MarkResult can route them to the disabled credential path.
+func (e statusErr) ErrorCode() string {
+	if e.tosViolation {
+		return "tos_violation"
+	}
+	return ""
+}
 
 const openAICompatTPMFallbackRetryAfter = time.Minute
 

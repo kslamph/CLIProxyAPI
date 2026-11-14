@@ -148,6 +148,9 @@ framing and spool pruning remain. Before deploying this change, remove the obsol
 from configuration: strict v8 validation no longer accepts it. This change does not
 alter `server.max-request-body-bytes` or introduce a decoded-size limit.
 Active patches: P1-P5 and P7-P9; patch numbers remain stable.
+Deployed 2026-11-14T22:31Z on LXC 115: `213cd057`, tag `deploy/v8.0.66-1`.
+The obsolete admission block was removed in place; current-build baseline and the
+15-minute post-deploy watch passed. See `~/devops/docs/jobs/2026-11-14/2026-11-14T222440Z-cpa-custom-p6-drop-deploy.md`.
 
 ## Patch inventory
 
@@ -506,6 +509,7 @@ file CLIProxyAPI   # must say "dynamically linked"
 
 | Date | Base | Deployed commit | Notes |
 |---|---|---|---|
+| 2026-11-14 | v8.0.66 | `213cd057` | LXC 115, `deploy/v8.0.66-1`: P6 retired, obsolete admission config removed in place; opencode-go v0.2.4 and zai-provider v0.1.7 rebuilt against custom SDK and loaded. Watch pass: 59/59 POSTs 2xx; no restart, OOM, PID change or high events. Backup `/var/tmp/cpa-v8066-deploy-213cd057/backup/`; job `~/devops/docs/jobs/2026-11-14/2026-11-14T222440Z-cpa-custom-p6-drop-deploy.md`. |
 | 2026-10-22 | v8.0.38 | `0db19025` | first VPS deploy (static build, later found wrong) |
 | 2026-10-31 | v8.0.48 | `909b88f3` + dirty tree | P1 merged; CGO rebuild incl. P2 before it was committed |
 | 2026-11-01 | v8.0.48 | `cf7f0f92` | P1 + P2 + P3; fixes duplicate opencode-go profile after saving excluded models |

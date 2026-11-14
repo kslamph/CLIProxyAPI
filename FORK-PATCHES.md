@@ -181,6 +181,11 @@ sending upstream (then drop the local copy after it lands).
   `internal/access/config_access/provider.go` (+test), `internal/api/server_middleware.go`,
   `internal/config/{config_v8,sdk_config}.go` (+test), `internal/watcher/diff/config_diff.go`,
   `sdk/cliproxy/service_config.go`, `sdk/config/config.go`, `config.example.yaml`.
+- Review hardening (2026-11-15): final catalog filtering now mutates one `ojson.Doc`,
+  matches Claude cloaked IDs against their decoded routing names, updates Claude catalog
+  boundaries, and clears interceptor Content-Length on filtering or rejection. Home Gemini
+  model-detail policy enforcement was already present locally and now has a regression test;
+  the equivalent guard was added to upstream PR #7554.
 - Merge-conflict hotspots: the `sdk/api/handlers/*` list/execute call sites and
   `internal/access/config_access/provider.go`. Upstream refactors there are the
   usual cause; re-apply the policy check at the same three points (model list,

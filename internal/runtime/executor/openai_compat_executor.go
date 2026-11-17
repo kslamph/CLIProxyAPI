@@ -1282,12 +1282,9 @@ type statusErr struct {
 	credentialScoped   bool
 	streamTruncated    bool
 	transientRateLimit bool
-	// overloadDelegated marks a Codex capacity overload rejection whose retry is
-	// delegated to the client: no credential cooldown and no re-dispatch.
-	overloadDelegated bool
-	tosViolation      bool
-	tosAppealURL      string
-	tosAppealURLText  string
+	tosViolation       bool
+	tosAppealURL       string
+	tosAppealURLText   string
 	// diagnostic is a content-free detail for logs only; it never reaches clients.
 	diagnostic string
 }
@@ -1312,12 +1309,6 @@ func (e statusErr) IsStreamTruncated() bool { return e.streamTruncated }
 // IsTransientRateLimit marks a transient per-model capacity/admission 429
 // that must not be recorded as credential quota exhaustion.
 func (e statusErr) IsTransientRateLimit() bool { return e.transientRateLimit }
-
-// IsCodexOverloadDelegated marks a Codex capacity overload rejection whose retry
-// is delegated to the client: the credential must not cool and the request must
-// not be replayed on another credential; the client-visible retry hint was
-// rewritten to a short local value.
-func (e statusErr) IsCodexOverloadDelegated() bool { return e.overloadDelegated }
 
 // IsTerminalTOSViolation marks a 403 PERMISSION_DENIED carrying an ErrorInfo
 // reason=TOS_VIOLATION. The conductor must deactivate the credential rather

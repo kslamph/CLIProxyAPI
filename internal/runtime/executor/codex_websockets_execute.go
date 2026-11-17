@@ -205,7 +205,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
-			return resp, newCodexStatusErrForPolicy(e.errPolicy(), respHS.StatusCode, respHS.Header, bodyErr, e.modelLevelCooling())
+			return resp, newCodexStatusErrWithHeadersAndCooling(respHS.StatusCode, respHS.Header, bodyErr, e.modelLevelCooling())
 		}
 		return resp, errDial
 	}
@@ -347,7 +347,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 		payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
-		if wsErr, ok := parseCodexWebsocketErrorForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
+		if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 			}
@@ -357,7 +357,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", wsErr)
 			return resp, wsErr
 		}
-		if streamErr, terminalBody, ok := codexTerminalFailureErrForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
+		if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 			if sess != nil {
 				unlockSession()
 				e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)

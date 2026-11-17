@@ -838,11 +838,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isResponsesCompactRequestFaultError(execOpts, errExec) || isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
-				if isCodexOverloadDelegatedError(errExec) {
-					// Delegated overload ends the attempt: no model-pool hop, the
-					// client retries after the short rewritten hint.
-					return cliproxyexecutor.Response{}, errExec
-				}
 				authErr = errExec
 				if result.CredentialScope {
 					break
@@ -867,11 +862,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				continue
 			}
 			if isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr) {
-				return cliproxyexecutor.Response{}, authErr
-			}
-			if isCodexOverloadDelegatedError(authErr) {
-				// Delegated overload ends the request: no credential failover,
-				// the client retries after the short rewritten hint.
 				return cliproxyexecutor.Response{}, authErr
 			}
 			lastErr = authErr
@@ -1439,9 +1429,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				}
 				continue
 			}
-			if isCodexOverloadDelegatedError(errStream) {
-				// Delegated overload ends the request: no credential failover, the
-				// client retries after the short rewritten hint.
+			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
 				return nil, errStream
 			}
 			lastErr = errStream

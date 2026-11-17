@@ -174,7 +174,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
 			unlockStreamSession()
-			return nil, newCodexStatusErrForPolicy(e.errPolicy(), respHS.StatusCode, respHS.Header, bodyErr, e.modelLevelCooling())
+			return nil, newCodexStatusErrWithHeadersAndCooling(respHS.StatusCode, respHS.Header, bodyErr, e.modelLevelCooling())
 		}
 		unlockStreamSession()
 		return nil, errDial
@@ -421,7 +421,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
-			if wsErr, ok := parseCodexWebsocketErrorForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
+			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
 				if sess != nil {
 					if timeoutReached && len(bufferedChunks) > 0 {
 						e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
@@ -454,13 +454,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				return nil, wsErr
 			}
-			if streamErr, terminalBody, ok := codexTerminalFailureErrForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
+			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 				// A transient capacity or usage-limit rejection during bootstrap is retried on
 				// another credential, so the downstream websocket session must survive this
 				// upstream teardown. Notifying the disconnect here (or when no buffered payload
 				// chunk precedes the error) would close the client connection before the retry
 				// can deliver anything.
-				overloadFailover := isCodexOverloadBootstrapFailureForPolicy(e.errPolicy(), terminalBody)
+				overloadFailover := isCodexOverloadBootstrapFailure(terminalBody)
 				usageLimitFailover := isCodexUsageLimitError(terminalBody)
 				failoverPending := overloadFailover || usageLimitFailover
 				if failoverPending && timeoutReached {
@@ -499,7 +499,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					// status the upstream refused to put on the wire.
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
 					if overloadFailover {
-						return nil, newCodexBootstrapOverloadErrForPolicy(e.errPolicy(), terminalBody)
+						return nil, newCodexBootstrapOverloadErr(terminalBody)
 					}
 					return nil, streamErr
 				}
@@ -711,7 +711,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
-			if wsErr, ok := parseCodexWebsocketErrorForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
+			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				// The disconnect notification makes the downstream handler close the client and
@@ -742,7 +742,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				return
 			}
-			if streamErr, terminalBody, ok := codexTerminalFailureErrForPolicy(e.errPolicy(), payload, e.modelLevelCooling()); ok {
+			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
 				// Publish the downstream disconnect only after an in-stream error was delivered,

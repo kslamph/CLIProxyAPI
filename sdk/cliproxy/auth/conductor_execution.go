@@ -1680,9 +1680,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				}
 				continue
 			}
-			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
-				return nil, errStream
-			}
 			lastErr = errStream
 			if homeMode {
 				roundTiming.Observe(lastErr)

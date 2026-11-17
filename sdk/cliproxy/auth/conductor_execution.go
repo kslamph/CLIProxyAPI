@@ -204,11 +204,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	defer func() { scope.end() }()
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
-	isImageExecution := isOpenAIImageExecutionOptions(opts)
-	if isImageExecution {
-		ctx = WithCodexOuterCredentialRequired(ctx, true)
-	}
-	ctx = WithCodexClientRequest(ctx, isImageExecution || IsCodexClientRequest(ctx, opts.Headers))
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = contextWithInFlightScope(ctx, scope)
 	normalized := m.normalizeProviders(providers)
@@ -364,11 +360,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}()
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
-	isImageExecution := isOpenAIImageExecutionOptions(opts)
-	if isImageExecution {
-		ctx = WithCodexOuterCredentialRequired(ctx, true)
-	}
-	ctx = WithCodexClientRequest(ctx, isImageExecution || IsCodexClientRequest(ctx, opts.Headers))
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = contextWithInFlightScope(ctx, scope)
 	if m.HomeEnabled() {

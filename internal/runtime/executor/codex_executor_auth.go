@@ -59,7 +59,7 @@ func ensureCodexSIWCCredentialsForRequest(ctx context.Context, auth *cliproxyaut
 	if !codexUseSIWC(auth) {
 		return nil
 	}
-	if !codexUseSIWCForRequest(ctx, auth, clientHeaders...) {
+	if cliproxyauth.IsCodexClientRequest(ctx, clientHeaders...) {
 		if strings.TrimSpace(apiKey) == "" {
 			return statusErr{code: 401, msg: "codex executor: original OAuth access_token is required for Codex client requests"}
 		}

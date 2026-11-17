@@ -1351,7 +1351,7 @@ func (h *OpenAIAPIHandler) collectRoutedImages(c *gin.Context, imageReq []byte, 
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	cliCtx = handlers.WithDisallowFreeAuth(cliCtx)
-	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	model := strings.TrimSpace(imageModel)
 	resp, upstreamHeaders, errMsg := h.ExecuteImageWithAuthManager(cliCtx, xaiImagesHandlerType, model, imageReq, "")
@@ -1669,7 +1669,7 @@ func (h *OpenAIAPIHandler) collectImagesWithModelAndOriginal(c *gin.Context, ima
 	cliCtx = handlers.WithFinalizedResponseFormatCallback(cliCtx, func(finalizedFormat string) {
 		responseFormat = finalizedFormat
 	})
-	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	model = strings.TrimSpace(model)
 	resp, upstreamHeaders, errMsg := h.ExecuteImageWithAuthManager(cliCtx, xaiImagesHandlerType, model, imageReq, "")
@@ -1825,7 +1825,7 @@ func (h *OpenAIAPIHandler) collectImagesFromResponses(c *gin.Context, responsesR
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	cliCtx = handlers.WithDisallowFreeAuth(cliCtx)
-	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	mainModel := strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(responsesReq, "model").String()))
 	if mainModel == "" {

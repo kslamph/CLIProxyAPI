@@ -874,9 +874,9 @@ func (h *OpenAIAPIHandler) VideosContent(c *gin.Context) {
 	cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 		selectedAuthID = authID
 	})
-	// No media keep-alive here: the response is a raw binary download, and a keep-alive newline
-	// would prefix the video bytes and commit the status and headers before they are known.
+	stopKeepAlive := h.StartMediaNonStreamingKeepAlive(c, cliCtx)
 	resp, _, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiVideosHandlerType, executionModel, payload, "")
+	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		if errMsg.Error != nil {

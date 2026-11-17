@@ -165,7 +165,7 @@ Upstream v8.0.66..v8.0.72 touched `sdk/pluginapi/types.go` -> rebuild plugins ag
 
 State at 2026-11-18: `custom` sync branch = upstream v8.0.76 merged (`sync/v8.0.76`, one conflict, an import
 list in `plugin_quota.go`). Carries P1, P2 (filter only), P4, P7. P3, P5, P8, P9 retired (see above); P6 retired
-earlier. Not deployed yet. `go test ./...` green. `git diff --stat v8.0.76..HEAD` lists only P1/P2/P4/P7 files
+earlier. Deployed 2026-11-17T17:48Z as `951e9cdf` (tag `deploy/v8.0.76-1`; adds one fix removing a stale stream early-return the P5 revert had resurrected). `go test ./...` green. `git diff --stat v8.0.76..HEAD` lists only P1/P2/P4/P7 files
 and this doc. Note: upstream now bans `encoding/json` and `regexp` (AGENTS.md); P7's `body_frames.go`
 files still import `encoding/json`.
 
@@ -393,6 +393,7 @@ file CLIProxyAPI   # must say "dynamically linked"
 
 | Date | Base | Deployed commit | Notes |
 |---|---|---|---|
+| 2026-11-17 | v8.0.76 | `951e9cdf` | LXC 115, `deploy/v8.0.76-1`; from v8.0.72 `753dd73d`. P3/P5/P8/P9 retired (see Retired table), P2 shrunk, upstream v8.0.73-v8.0.76 merged. Config unchanged (no incompatible keys; `nonstream-keepalive-interval: 80` kept, now applies to text endpoints too). opencode-go v0.2.4 and zai-provider v0.1.7 rebuilt against custom SDK, loaded and registered. Watch pass: 29/29 POSTs 2xx (report: 38/38), no restart, OOM or high events; memory max 60 MB. Backup `/var/tmp/cpa-v8076-deploy/backup/`; baseline = v8.0.72 retro (8238 POSTs) + 12-sample. |
 | 2026-11-14 | v8.0.66 | `213cd057` | LXC 115, `deploy/v8.0.66-1`: P6 retired, obsolete admission config removed in place; opencode-go v0.2.4 and zai-provider v0.1.7 rebuilt against custom SDK and loaded. Watch pass: 59/59 POSTs 2xx; no restart, OOM, PID change or high events. Backup `/var/tmp/cpa-v8066-deploy-213cd057/backup/`; job `~/devops/docs/jobs/2026-11-14/2026-11-14T222440Z-cpa-custom-p6-drop-deploy.md`. |
 | 2026-10-22 | v8.0.38 | `0db19025` | first VPS deploy (static build, later found wrong) |
 | 2026-10-31 | v8.0.48 | `909b88f3` + dirty tree | P1 merged; CGO rebuild incl. P2 before it was committed |

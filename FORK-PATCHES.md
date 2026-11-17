@@ -147,7 +147,7 @@ framing and spool pruning remain. Before deploying this change, remove the obsol
 `server.request-body-admission` block (or legacy top-level `request-body-admission`)
 from configuration: strict v8 validation no longer accepts it. This change does not
 alter `server.max-request-body-bytes` or introduce a decoded-size limit.
-Active patches: P1-P5 and P7-P9; patch numbers remain stable.
+Active patches at that date: P1-P5 and P7-P9; patch numbers remain stable.
 Deployed 2026-11-14T22:31Z on LXC 115: `213cd057`, tag `deploy/v8.0.66-1`.
 The obsolete admission block was removed in place; current-build baseline and the
 15-minute post-deploy watch passed. See `~/devops/docs/jobs/2026-11-14/2026-11-14T222440Z-cpa-custom-p6-drop-deploy.md`.
@@ -162,6 +162,12 @@ catalog); P3 still needed (`buildAuthFromFileData` has no plugin-parser consult)
 state: `TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader` (`internal/pluginhost`) fails
 on pristine v8.0.72 as well; `go test -count=2 ./sdk/cliproxy` leaks state on `custom` too.
 Upstream v8.0.66..v8.0.72 touched `sdk/pluginapi/types.go` -> rebuild plugins against the new SDK.
+
+State at 2026-11-18: `custom` sync branch = upstream v8.0.76 merged (`sync/v8.0.76`, one conflict, an import
+list in `plugin_quota.go`). Carries P1, P2 (filter only), P4, P7. P3, P5, P8, P9 retired (see above); P6 retired
+earlier. Not deployed yet. `go test ./...` green. `git diff --stat v8.0.76..HEAD` lists only P1/P2/P4/P7 files
+and this doc. Note: upstream now bans `encoding/json` and `regexp` (AGENTS.md); P7's `body_frames.go`
+files still import `encoding/json`.
 
 ## Patch inventory
 
@@ -214,58 +220,13 @@ sending upstream (then drop the local copy after it lands).
 
 ### P2 - drop `gpt-6.1-terra` from codex-free (`local-only`, time-limited)
 - Commit: `3914533b`.
-- What: removes `gpt-6.1-terra` from the embedded `codex-free` section of
-  `internal/registry/models/models.json` and filters it in `GetCodexFreeModels`
-  (`internal/registry/model_definitions.go`) so a remote catalog refresh cannot
-  bring it back. OpenAI rejects it for free ChatGPT accounts and free accounts
+- What (shrunk 2026-11-18): only the `GetCodexFreeModels` read-time filter in
+  `internal/registry/model_definitions.go` remains; `models.json` is now identical to
+  upstream (no more conflicts there). All readers of `CodexFree` go through the getter. OpenAI rejects it for free ChatGPT accounts and free accounts
   are scheduled first.
-- Conflict hotspot: `models.json` (upstream regenerates it). If it conflicts,
-  take upstream's file and re-run only the `GetCodexFreeModels` filter part.
 - Verify: `go test ./internal/registry -run CodexFree`.
 - Drop when: upstream's catalog stops listing the model for free, or OpenAI
   accepts it for free accounts. Check the model in the upstream catalog first.
-
-### P3 - keep plugin-assigned auth IDs on v8 management writes (`candidate`)
-- Commit: `cf7f0f92` (`fix(management): keep plugin-assigned auth IDs ...`).
-- Review fixes (2026-11-15): plugin-provided `FileName` values are retained (only empty names default to the source basename). New strict parser, multi-auth identity reconciliation, atomic upload writes and delete-all virtual-record cleanup are enabled only by the maintained v8 upload/delete wrappers; deprecated v0 retains its original single-record/path-ID/direct-write behavior. Shared OAuth and field-save synthesis retains upstream behavior with synchronized plugin snapshots, and the existing SIWC mutation fencing remains independent. Temp-file errors use method-specific names. V8-only symlink-aware identity matching covers upload and delete-all without changing shared legacy path matching. Regression tests cover raw/multipart v0/v8 uploads for multi-record, parser-error and handled-empty results, and names against watcher synthesis.
-- Bug: historically, saving or uploading a plugin-owned auth file through
-  the management API (including legacy `POST /v0/management/auth-files`) registered an auth with the path-derived ID `<file>.json`,
-  while the file watcher registered the plugin-assigned ID (for opencode-go:
-  `opencode-go-key-<sha256(api_key)>`) for the same file -> the credential
-  appeared twice until restart. Cause: `buildAuthFromFileData` built the
-  `SynthesisContext` without `PluginAuthParser` and then forced
-  `auth.ID = authIDForPath(path)`.
-- Maintained fix: `POST /v8/management/credentials` upload and its v8 delete wrapper
-  enable the new behavior; deprecated v0 uploads/deletes retain upstream semantics.
-  Shared OAuth/field-save paths keep their original synthesis semantics.
-- Compatibility limitation: CPAM currently hardcodes `/v0/management` (`apps/web/src/utils/constants.ts`). Its auth-file editor therefore retains legacy behavior and does not receive this v8-only fix until CPAM is separately migrated. No CPAM source changes are included here.
-- Change (`internal/api/handlers/management/auth_files_crud.go` and v8 wrappers):
-  v8 upload synthesis passes the plugin host as `PluginAuthParser` through
-  a small `pluginOwnershipRecorder` and preserves all plugin-assigned IDs,
-  including multi-auth files. A handled-empty result suppresses fallback records;
-  a successful unhandled result keeps the historical path-derived ID. The
-  `GetByID` lookup for the CreatedAt/refresh carry-over uses the final ID.
-  V8 upload synthesis uses `StrictFileParsing: true`, matching the watcher's single-file
-  snapshot path: a parser error rejects the write before file replacement,
-  record upsert/removal or post-persist hooks, rather than silently falling back
-  to a path-derived identity. Existing files and auth records remain unchanged.
-- Tests: `auth_files_plugin_identity_test.go` -
-  `TestBuildAuthFromFileData_KeepsPluginAssignedID`,
-  `TestWriteAuthFile_PluginOwnedFileDoesNotDuplicate`,
-  `TestBuildAuthFromFileData_UnclaimedFileKeepsPathID`, multi-auth/handled-empty
-  coverage, and `TestWriteAuthFileRejectsPluginParserErrorWithoutMutation`
-  (single/multi parsers, handled/unhandled errors, new uploads and overwrites).
-- Verify: `go test ./internal/api/handlers/management`.
-- Related but separate: the opencode-go plugin carries a start-up reconcile for
-  already-duplicated records (plugin P1/P2). P3 stops new duplicates from the
-  host side; the plugin reconcile only repairs old state at (re)configure time.
-  Both are needed until upstream fixes the host.
-- Drop when: upstream maintained v8 uploads consult the plugin parser and
-  preserve all plugin IDs and names, with equivalent strict-error and handled-empty semantics. Check by re-running the three tests above against
-  upstream's code; if they pass without our change, delete the patch (keep the
-  test file as a regression guard if upstream has no equivalent).
-- Upstream: [PR #7555](https://github.com/router-for-me/CLIProxyAPI/pull/7555),
-  submitted 2026-11-15; retain this patch until an equivalent upstream release is merged.
 
 ### P4 - quota observations set/clear a credential's out-of-quota routing state (`local-only`)
 - Commits: merge of branch `quota-refresh-clears-cooldown` (`c8a8d37c`, `40e89820`,
@@ -337,72 +298,6 @@ sending upstream (then drop the local copy after it lands).
   code; keep them as regression guards if upstream lacks equivalents.
 - Upstream: not filed.
 
-### P5 - Codex overload rejections delegated to the client (`local-only`)
-- Commit: branch `codex-overload-retry-hint` (this change).
-- Problem (owner-observed 2026-11-05, LXC 115): the Codex upstream intermittently answers with
-  `server_is_overloaded` / `service_unavailable_error` inside an HTTP 200 SSE stream right after
-  the handshake events, carrying `error.headers` = `x-retry-metadata NO_MORE_RETRY`, `retry-after
-  316`. Owner data says it is capacity/time-of-day noise, unrelated to the credential. CPA used to
-  (a) cool the reporting credential, (b) answer 503 instantly once both paid credentials cooled
-  (69/943 requests, median 270 ms), (c) fail over to the other credential (prompt-cache miss for
-  nothing), and (d) forward the 316 s hint so the official Codex client (0.166.0) slept exactly
-  316 s per its `stream_max_retries` while never reading `x-retry-metadata`.
-- What: new config `upstream.codex.overload-retry-after-seconds` (aliases `codex.` and
-  `oauth.providers.codex.`; `*int`, unset = 5, explicit <= 0 = kill switch). For the overload class
-  ONLY (`error.code server_is_overloaded` / `error.type service_unavailable_error`, rate-limit /
-  quota codes excluded): the statusErr is built as 429 + retryAfter 5 s + `overloadDelegated` marker
-  and its body's `error.headers` is rewritten to `retry-after "5"` / `retry-after-ms "5000"` with
-  `x-retry-metadata` removed (both the bare error and response.failed layouts; the rewrite happens
-  in the executor's error construction, so every client renderer - Responses SSE
-  `response.failed`/`error` frames, uncommitted JSON bodies, chat-completions, Claude - renders the
-  rewritten body; the frame Codex reads is the `response.failed` event's `response.error.headers`).
-  The conductor (`sdk/cliproxy/auth`): new `ErrorCodeOverloadDelegated` classification, cooldown skip
-  via `shouldSkipCredentialCooldown` (no NextRetryAfter/Unavailable/Quota write, quota backoff
-  unmoved), session-affinity rebind skip, no retry rounds / no model-pool hop / no credential
-  failover (stream, non-stream, handler bootstrap retry). When response headers are uncommitted the
-  client gets HTTP 429 + `Retry-After: 5` with the rewritten body. Bootstrap buffering
-  (`codex.stream-bootstrap-buffering`) is unchanged as a feature, but for this class it no longer
-  fails the attempt over - it delivers in-stream; every other overload-shaped class keeps the
-  failover. `codex.stream-bootstrap-buffering` stays default-off.
-- Accepted rewrite gaps (owner decision): classification and raw-frame rewriting
-  do not cover identical WebSocket layouts. The WebSocket parser normalizes
-  `body.error` to a canonical `error`, but the duplex raw-frame detector/rewriter
-  only checks `error` and `response.error`; a forwarded wrapped `body.error`
-  frame can therefore retain the upstream long retry hint despite internal
-  delegated-overload classification. For a raw `response.failed` frame without
-  an error headers object, the rewrite fallback creates top-level `error.headers`
-  instead of `response.error.headers`, so the expected nested short hint may be
-  absent. These are static-review findings, not reproduced production incidents.
-  Keep the current implementation; fix these cases only if observed in use.
-- Files: `internal/config/config_types.go` (field + default + accessor), `internal/config/config_v8.go`
-  (aliases), `internal/watcher/diff/config_diff.go` (reload log line), `config.example.yaml`,
-  `internal/runtime/executor/{codex_executor_terminal,codex_executor_stream,codex_executor_execute,
-  codex_executor,codex_openai_images,codex_websockets_errors,codex_websockets_stream,
-  codex_websockets_execute,codex_websockets_duplex,codex_websockets_executor,openai_compat_executor}.go`,
-  `sdk/cliproxy/executor/types.go` (`CodexOverloadDelegatedError`),
-  `sdk/cliproxy/auth/{errors,conductor_cooldown,conductor_selection,conductor_execution,
-  conductor_stream}.go`, `sdk/api/handlers/handlers_stream.go`.
-- Tests: `internal/config/codex_overload_config_test.go`,
-  `internal/runtime/executor/codex_overload_retry_hint_test.go`,
-  `sdk/cliproxy/auth/conductor_overload_delegation_test.go`,
-  `test/codex_overload_retry_hint_test.go` (full-stack /v1/responses with the recorded journal
-  bytes; committed-stream rewrite + no cooldown/failover, uncommitted 429 + Retry-After 5 with a
-  pre-cooled sibling, kill switch restores 316 passthrough + cooldown).
-- Conflict hotspots: `newCodexStatusErrWithHeadersAndCooling` (now `newCodexStatusErrForPolicy`) and
-  `codexTerminalFailureErr*` in `codex_executor_terminal.go`; the failover `continue` sites in
-  `conductor_stream.go` / `conductor_execution.go`; `shouldSkipCredentialCooldown`;
-  `isCodexOverloadBootstrapFailure`. Upstream refactors of the codex error constructors are the
-  usual cause; re-apply the policy check at the constructor and the marker checks at the retry
-  decision points.
-- Verify: `go test ./internal/config/ ./internal/runtime/executor/ ./sdk/cliproxy/auth/ ./test/ -run 'Overload'`
-  plus the full gate (`gofmt -l .`, `go build -o /tmp/cpa-check ./cmd/server`, `go test ./...`).
-- Drop when: upstream stops treating a `server_is_overloaded` rejection as cooling/failover-able
-  (no cooldown, no failover, client-directed retry), or the Codex client stops needing a short
-  `retry-after` to retry promptly (e.g. it starts honouring `NO_MORE_RETRY` semantics or its own
-  capped backoff). Re-run the tests above against upstream's code; keep them as regression guards
-  if upstream lacks equivalents.
-- Upstream: not filed. The behaviour is fork policy (owner decision: simple, no cooldown, sticky).
-
 ### P7 - CPBF binary body frames and request-log spool pruning (`local-only`)
 - Commits: `7244ab69` (original), `23daa206` and `f84b6116` (review fixes and protocol limits).
 - What: plugins opt in with the `binary_body_frames` capability. Executor execute / stream / count
@@ -428,49 +323,18 @@ sending upstream (then drop the local copy after it lands).
   large-body transport. Sibling impact: `opencode-go-cliproxyapi` mirrors the frame format and its
   cold-bridge retry depends on the host's `invalid plugin body frame` error text.
 
-### P8 - non-stream keep-alive limited to media JSON responses (`local-only`)
-- Commits: `b2529e84` (scope), `33736a0d` and `20f1ccae` (binary download, regression tests, scope docs).
-- Problem: upstream `nonstream-keepalive-interval` writes a blank line every N seconds while any
-  non-stream request waits. The first blank line commits HTTP 200 and the headers, so a later
-  upstream 429/502 reaches the client as 200 and upstream headers are lost; for the video content
-  download it also prefixed the raw video bytes with `\n` and pre-empted `Content-Type`/`Content-Length`.
-- What: the helper is `BaseAPIHandler.StartMediaNonStreamingKeepAlive` and is called only by the
-  xAI image/video JSON handlers. Chat, Completions, Responses, Compact, Claude, Gemini and
-  Interactions never call it, so they keep real statuses. `VideosContent` (binary download) does not
-  call it. Tradeoff: a plain chat request has no proxy idle protection from this setting.
-  Limitation: an error that arrives after the first tick on a media endpoint is a JSON body inside
-  HTTP 200. Tick source is injectable for tests (`SetNonStreamingKeepAliveTickerFactoryForTest`).
-- Files: `sdk/api/handlers/handlers.go`, `sdk/api/handlers/openai/{openai_handlers,openai_responses_handlers,openai_images_handlers,openai_videos_handlers}.go`, `sdk/api/handlers/{claude/code_handlers,gemini/gemini_handlers,gemini/interactions_handlers}.go`, `internal/config/sdk_config.go`, `config.example.yaml`.
-- Tests: `sdk/api/handlers/openai/openai_media_keepalive_test.go`.
-- Conflict hotspots: any upstream re-adding `StartNonStreamingKeepAlive` calls to text handlers, or
-  new non-stream binary endpoints starting a keep-alive.
-- Verify: `go test ./sdk/api/handlers/... -run 'KeepAlive|Videos'`.
-- Drop when: upstream scopes the non-stream keep-alive away from text and binary responses, or
-  removes it.
-- Upstream: not filed.
+### Retired, under observation (2026-11-18, v8.0.76 sync)
 
-### P9 - `siwc_mode: always` forces SIWC for Codex client requests (`local-only`)
-- Commit: `edc380c7`.
-- What: a Codex credential with `use_siwc: true` and `siwc_mode: always` sends every request
-  through the nested SIWC partition, including requests from Codex clients (codex-tui, Codex
-  Desktop), which upstream skips SIWC for by design. `IsCodexUseSIWCForRequest` honours
-  `siwc_mode` before the client-UA exclusion; `ensureCodexSIWCCredentialsForRequest` requires the
-  SIWC token whenever the request resolves to SIWC (error `siwc access_token is missing`);
-  `WithCodexOuterCredentialRequired` keeps OpenAI image execution on the outer partition
-  regardless of the mode (SIWC does not serve it); `siwc_mode` is preserved across credential
-  rewrites/refreshes like `use_siwc` and shown in the management auth-files listing.
-- Files: `internal/api/handlers/management/auth_files.go`, `internal/auth/codex/token.go`,
-  `internal/runtime/executor/codex_executor_auth.go` (+test), `sdk/cliproxy/auth/{types,
-  conductor_execution,conductor_stream,metadata_merge}.go`, `sdk/cliproxy/auth/codex_siwc_selection_test.go`.
-- Conflict hotspots: `sdk/cliproxy/auth/types.go` (`IsCodexUseSIWCForRequest`, siwc_mode
-  helpers), the SIWC selection call sites in `conductor_execution.go` / `conductor_stream.go`,
-  `ensureCodexSIWCCredentialsForRequest`. Upstream changes to the SIWC partition logic are the
-  usual cause; re-apply "siwc_mode before the client-UA exclusion" and "image requests keep the
-  outer partition".
-- Verify: `go test ./sdk/cliproxy/auth/ ./internal/runtime/executor/ -run 'SIWC'`.
-- Drop when: upstream lets a credential force SIWC for Codex client requests (an equivalent
-  `siwc_mode`/always option), or stops excluding Codex clients from SIWC.
-- Upstream: not filed.
+Dropped to cut merge cost; the owner watches production to decide whether any must return.
+Pre-drop `custom` = `753dd73d` (v8.0.72 sync, all patches present). Full original text of each
+entry: `git show 753dd73d:FORK-PATCHES.md`. To restore one, revert its drop commit on `custom`.
+
+| Patch | What it did | Drop commit(s) on `sync/v8.0.76` | Watch for / restore if |
+|---|---|---|---|
+| P3 | v8 uploads/deletes keep plugin-assigned auth IDs, FileName, multi-record, strict parser errors | `a6d86588` (superseded by upstream `95ebe39c`, issue #7557) | opencode-go credential shown twice after a v8 upload, or a parser error that still writes the file. Close our PR #7555 as superseded. |
+| P5 | Codex `server_is_overloaded` delegated to the client (no cooldown/failover, `retry-after: 5`) | `0dd6a858` (revert of `ea8e7bd4`) | 503s / credential cooldown storms or long client sleeps (316 s) on Codex overloads. Upstream `deacbf21` now preserves nested Retry-After on overload errors but does not delegate. Config key `upstream.codex.overload-retry-after-seconds` no longer exists: remove it from live config. |
+| P8 | `nonstream-keepalive-interval` limited to media JSON endpoints | `204b9e76`, `fb27944c` (reverts of `b2529e84`, `33736a0d`, `20f1ccae`) | If live `nonstream-keepalive-interval` > 0, text endpoints now commit HTTP 200 on the first tick and hide upstream 429/502. Set it to 0 unless proxy timeouts need it. |
+| P9 | `siwc_mode: always` forces SIWC for Codex client requests | `9ba3de68` (revert of `edc380c7`) | Codex clients (codex-tui, Desktop) stop using SIWC on credentials that carry `siwc_mode`. Check credentials with that field before deploying. |
 
 ## Untracked local files (not patches, do not lose)
 

@@ -1122,12 +1122,14 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 
 func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
 	tests := []struct {
-		name  string
-		auth  *cliproxyauth.Auth
-		token string
+		name      string
+		auth      *cliproxyauth.Auth
+		token     string
+		userAgent string
 	}{
 		{
-			name: "OAuth",
+			name:      "OAuth",
+			userAgent: "config-ua",
 			auth: &cliproxyauth.Auth{
 				Provider: "codex",
 				Attributes: map[string]string{
@@ -1146,7 +1148,8 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
 					"header:Originator": "custom-origin",
 				},
 			},
-			token: "sk-test",
+			token:     "sk-test",
+			userAgent: codexUserAgent,
 		},
 	}
 
@@ -1165,8 +1168,8 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
 
 			headers = applyCodexWebsocketHeaders(ctx, headers, tt.auth, tt.token, cfg, false)
 
-			if got := headers.Get("User-Agent"); got != codexUserAgent {
-				t.Fatalf("User-Agent = %q, want %q", got, codexUserAgent)
+			if got := headers.Get("User-Agent"); got != tt.userAgent {
+				t.Fatalf("User-Agent = %q, want %q", got, tt.userAgent)
 			}
 			if got := headers.Get("Originator"); got != codexOriginator {
 				t.Fatalf("Originator = %q, want %q", got, codexOriginator)

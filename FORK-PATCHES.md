@@ -171,6 +171,18 @@ files still import `encoding/json`.
 
 ## Patch inventory
 
+### P10 - configurable Codex cloaking user agent (`local-only`)
+
+- Use the configured OAuth Codex user agent when cloaking HTTP and WebSocket
+  requests; fall back to the upstream built-in user agent when unset. API-key
+  and SIWC behavior remains unchanged.
+- Files / conflict hotspots: `internal/runtime/executor/codex_executor_request.go`,
+  `codex_per_credential_cloaking_issue6034_test.go`,
+  `codex_websockets_executor_test.go`, `config.example.yaml`.
+- Verify: `go test ./internal/runtime/executor/...`.
+- Drop when upstream supports the configured OAuth user agent during cloaking
+  with equivalent HTTP and WebSocket behavior.
+
 Status key: `local-only` = not in upstream, must be carried; `candidate` = worth
 sending upstream (then drop the local copy after it lands).
 

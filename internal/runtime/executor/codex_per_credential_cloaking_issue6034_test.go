@@ -313,3 +313,36 @@ func TestCodexPerCredentialDisableCloaking_ResolvedFromConfigWithoutAttribute(t 
 		t.Errorf("User-Agent = %q, want %q", got, "CustomLookupAgent/1.0")
 	}
 }
+
+func TestCodexCloakingUsesConfiguredOAuthUserAgent(t *testing.T) {
+	const configured = "codex-tui/0.170.0 (Ubuntu 26.4.0; x86_64) Orca/1.4.261 (codex-tui; 0.170.0)"
+	for _, tc := range []struct {
+		name       string
+		configured string
+		auth       *cliproxyauth.Auth
+		disabled   bool
+		want       string
+	}{
+		{"oauth configured", configured, &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "test"}}, false, configured},
+		{"oauth fallback", "", &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "test"}}, false, codexUserAgent},
+		{"api key ignores oauth default", configured, &cliproxyauth.Auth{Provider: "codex", Attributes: map[string]string{"api_key": "test"}}, false, codexUserAgent},
+		{"disabled preserves custom header", configured, &cliproxyauth.Auth{Provider: "codex", Attributes: map[string]string{"header:User-Agent": "credential-agent"}, Metadata: map[string]any{"access_token": "test"}}, true, "credential-agent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Codex: config.CodexConfig{DisableCodexCloaking: tc.disabled}, CodexHeaderDefaults: config.CodexHeaderDefaults{UserAgent: tc.configured}}
+			incoming := http.Header{"User-Agent": {"incoming-agent"}}
+			req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			applyCodexHeadersFromSources(req, tc.auth, "test-token", false, cfg, incoming)
+			if got := req.Header.Get("User-Agent"); got != tc.want {
+				t.Errorf("HTTP User-Agent = %q, want %q", got, tc.want)
+			}
+			ws := applyCodexWebsocketHeaders(context.Background(), nil, tc.auth, "test-token", cfg, false, incoming)
+			if got := ws.Get("User-Agent"); got != tc.want {
+				t.Errorf("WebSocket User-Agent = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

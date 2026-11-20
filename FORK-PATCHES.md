@@ -169,6 +169,14 @@ earlier. Deployed 2026-11-17T17:48Z as `951e9cdf` (tag `deploy/v8.0.76-1`; adds 
 and this doc. Note: upstream now bans `encoding/json` and `regexp` (AGENTS.md); P7's `body_frames.go`
 files still import `encoding/json`.
 
+State at 2026-11-20: `custom` = upstream v8.0.79 merged (`sync/v8.0.79`; v8.0.78 included). One conflict, in
+`sdk/api/handlers/handlers_interceptors_test.go`: upstream's two `Issue6101` tests already existed on `custom`, so
+only upstream's new `TestResponseInterceptRequest_SetsKindAcrossAuthManagerAndModelListPaths` was kept. Carries
+P1, P2 (filter only), P4, P7, P10. Drop-when re-check at v8.0.79: `api-key-model-access`, `ReconcileQuota`,
+`gatesRouting`, `CPBF` absent upstream; P2 still needed (`gpt-6.1-terra` in the catalog); P10 still needed (upstream
+only has a flag that disables the forced Codex User-Agent, not a configured one). `go build` and `go test ./...` green.
+Upstream changed `sdk/pluginapi/types.go` and `sdk/pluginhost/usage.go` -> plugins rebuilt against the custom SDK.
+
 ## Patch inventory
 
 ### P10 - configurable Codex cloaking user agent (`local-only`)

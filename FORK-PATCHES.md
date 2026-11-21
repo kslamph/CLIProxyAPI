@@ -169,6 +169,19 @@ earlier. Deployed 2026-11-17T17:48Z as `951e9cdf` (tag `deploy/v8.0.76-1`; adds 
 and this doc. Note: upstream now bans `encoding/json` and `regexp` (AGENTS.md); P7's `body_frames.go`
 files still import `encoding/json`.
 
+State at 2026-11-21: `custom` = upstream v8.0.80 merged (`sync/v8.0.80`, merge commit `5a50fc68`). One conflict,
+in `internal/api/server_test.go` (gpt-5.5 service tiers; took upstream's new `priority`-tier expectation - runtime
+code is upstream's). Carries P1, P2 (filter only), P4, P7, P10. Drop-when re-check at v8.0.80: `api-key-model-access`,
+`ReconcileQuota`, `gatesRouting`, `CPBF` still absent upstream; P2 still needed (`gpt-6.1-terra` still in the catalog);
+P10 still needed - upstream now honors `oauth.providers.codex.header-defaults.user-agent` on the normal HTTP/WS
+header path (`ensureHeaderWithConfigPrecedence`), but `applyCodexCloakingHeaders` still forces the built-in UA, so P10
+stays the same 5-line carry reading the same config key (no live-config migration). Plugin ABI:
+`sdk/pluginapi/types.go` gained `RequestInterceptResponse.TerminateScope` (additive; `pluginabi.SchemaVersion`
+unchanged at 10); all three plugins were rebuilt against the custom SDK via an external `GOWORK` replace (clean trees,
+so `vcs.modified=false` for zai `ca0294e` and opencode-go `1dc92e17`; workbuddy `e5cf1f6`+local fixes keeps
+`modified=true` by design, same source as the 2026-11-20 deploy). `go build` green; `go test ./...` green except one
+flake in `internal/runtime/executor` on the first full run (package green standalone on rerun).
+
 State at 2026-11-20: `custom` = upstream v8.0.79 merged (`sync/v8.0.79`; v8.0.78 included). One conflict, in
 `sdk/api/handlers/handlers_interceptors_test.go`: upstream's two `Issue6101` tests already existed on `custom`, so
 only upstream's new `TestResponseInterceptRequest_SetsKindAcrossAuthManagerAndModelListPaths` was kept. Carries
